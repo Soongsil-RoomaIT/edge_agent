@@ -1,0 +1,22 @@
+# 복사해서 config.toml 로 사용 (config.toml 은 git 에 올리지 않음)
+device_id = "room-001"
+sample_interval = 2.0
+offline_grace = 2.0
+db_path = "data/edge.db"
+retention_days = 7
+use_mock_devices = true
+
+[mqtt]
+host = "localhost"
+port = 1883
+# username = ""
+# password = ""
+tls = false
+keepalive = 4
+topic_prefix = "roomcare"
+
+[thresholds]
+co2_high = 1000.0
+pm25_high = 35.0
+humidity_high = 70.0
+temperature_high = 30.0
