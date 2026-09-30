@@ -25,8 +25,13 @@ class SensorReader(Protocol):
     def read(self) -> Reading: ...
 
 
+class DoorSensor(Protocol):
+    @property
+    def is_open(self) -> bool: ...
+
+
 class Actuator(Protocol):
-    """켜기/끄기 두 상태로 다루는 액추에이터. 창문은 on=열림."""
+    """켜기/끄기 두 상태로 다루는 액추에이터. 창문/문은 on=열림."""
 
     name: str
 
@@ -39,6 +44,7 @@ class Actuator(Protocol):
 # 액추에이터 이름 (MQTT 명령, 자동제어 규칙에서 공통으로 사용)
 WINDOW = "window"
 AIR_PURIFIER = "air_purifier"
+DOOR = "door"  # 서보로 닫기만 가능 (set(False))
 
 
 class MockSensorReader:
@@ -72,3 +78,25 @@ class MockActuator:
 
     def set(self, on: bool) -> None:
         self._on = on
+
+
+class MockDoorSensor:
+    def __init__(self, is_open: bool = False) -> None:
+        self.is_open = is_open
+
+
+class MockDoorCloser:
+    """문 닫기 서보 흉내. set(False) 면 문이 닫힌다. 열기는 불가."""
+
+    name = DOOR
+
+    def __init__(self, sensor: MockDoorSensor) -> None:
+        self._sensor = sensor
+
+    @property
+    def is_on(self) -> bool:
+        return self._sensor.is_open
+
+    def set(self, on: bool) -> None:
+        if not on:
+            self._sensor.is_open = False

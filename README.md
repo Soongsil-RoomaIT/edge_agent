@@ -28,9 +28,24 @@ src/edge_agent/
 | 토픽 | 방향 | 내용 |
 |---|---|---|
 | `roomcare/{deviceId}/telemetry` | 엣지 → 클라우드 | `{measuredAt, temperature, humidity, co2, pm25}` |
-| `roomcare/{deviceId}/events` | 엣지 → 클라우드 | `{occurredAt, type, detail}` — `mode_changed`, `reconnected`, `auto_control`, `remote_command` |
+| `roomcare/{deviceId}/events` | 엣지 → 클라우드 | `{occurredAt, type, detail}` (아래 이벤트 목록) |
 | `roomcare/{deviceId}/status` | 엣지 → 클라우드 | `online` / `offline` (retained, LWT) |
-| `roomcare/{deviceId}/command` | 클라우드 → 엣지 | `{"actuator": "window", "on": true}` |
+| `roomcare/{deviceId}/command` | 클라우드 → 엣지 | `{"actuator": "window", "on": true}` — actuator: `window`, `air_purifier`, `door` |
+
+`door` 는 서보로 **닫기만** 가능합니다 (`"on": false`). `"on": true` 는 무시됩니다.
+
+### 이벤트 목록
+
+| type | detail | 발생 시점 |
+|---|---|---|
+| `agent_started` | | 에이전트 시작 |
+| `mode_changed` | `mode` | 온라인 ↔ 오프라인 전환 |
+| `reconnected` | `offline_seconds` | 통신 복구 (→ 사용자 알림) |
+| `auto_control` | `actuator`, `on`, `reason` | 오프라인 자동제어 실행 |
+| `remote_command` | `actuator`, `on` | 원격 조작 실행 |
+| `door_opened` / `door_closed` | `initial` | 문 상태 변경 (`initial=true` 는 시작 시 첫 상태) |
+| `sensor_error` / `sensor_recovered` | `error` / `failed_reads` | 센서 읽기 실패 / 복구 |
+| `actuator_error` | `actuator`, `on`, `error` | 액추에이터 동작 실패 |
 
 ## 오프라인 전환 시간 (NFR03: 10초 이내)
 
