@@ -66,10 +66,40 @@ copy config\config.example.toml config\config.toml
 python -m edge_agent
 ```
 
-로컬 테스트용 브로커가 필요하면 Mosquitto 를 띄운다 (`docker run -p 1883:1883 eclipse-mosquitto:2`, 익명 접속 허용 설정 필요).
+로컬 테스트용 브로커는 라즈베리파이에 Mosquitto 를 설치해서 쓴다.
+
+```bash
+sudo apt install -y mosquitto mosquitto-clients
+```
 
 ## 테스트
+
+### 단위 테스트
 
 ```bash
 pytest
 ```
+
+### 동작 테스트 (라즈베리파이)
+
+클라우드 역할은 `mosquitto_sub` / `mosquitto_pub` 로 대신한다.
+
+```bash
+mosquitto_sub -v -t 'roomcare/#'                                                      # 전송 데이터 보기
+mosquitto_pub -t roomcare/room-001/command -m '{"actuator":"window","on":true}'       # 원격 조작
+sudo systemctl stop mosquitto    # 통신 단절
+sudo systemctl start mosquitto   # 통신 복구
+```
+
+| 테스트 | 방법 | 결과 |
+|---|---|---|
+| 데이터 전송 | `mosquitto_sub` 로 수신 확인 | ✅ 2초마다 telemetry 수신 |
+| 원격 조작 | `mosquitto_pub` 로 창문 열기 명령 | ✅ window → True |
+| 오프라인 전환 | 브로커 정지 | ✅ 약 2.3초 만에 OFFLINE (기준 10초) |
+| 오프라인 자동제어 | 미세먼지 높은 상황 | ✅ 창문 닫고 공기청정기 켬 |
+| 복구 | 브로커 재시작 | ✅ 밀린 데이터와 `reconnected` 이벤트 전송 |
+
+테스트 환경: Raspberry Pi + 로컬 Mosquitto, Mock 센서/액추에이터 (2026-10-01)
+
+> 브로커 정지는 연결이 정상적으로 닫혀 끊김이 바로 감지되는 경우다.
+> 랜선/Wi-Fi 가 끊기는 경우는 keepalive 로 감지하므로 더 오래 걸린다 (설계상 ≤ 8.5초). 추가 확인 필요.
