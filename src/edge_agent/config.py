@@ -22,7 +22,8 @@ class MqttConfig:
 @dataclass
 class Thresholds:
     co2_high: float = 1000.0  # ppm
-    pm25_high: float = 35.0  # ug/m3
+    pm25_high: float = 35.0  # ug/m3, 초과 시 환경부 '나쁨'
+    pm10_high: float = 80.0  # ug/m3, 초과 시 환경부 '나쁨'
     humidity_high: float = 70.0  # %
     temperature_high: float = 30.0  # C
 

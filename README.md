@@ -27,8 +27,19 @@ src/edge_agent/
 
 | 토픽 | 방향 | 내용 |
 |---|---|---|
-| `roomcare/{deviceId}/telemetry` | 엣지 → 클라우드 | `{measuredAt, temperature, humidity, co2, pm25}` |
-| `roomcare/{deviceId}/events` | 엣지 → 클라우드 | `{occurredAt, type, detail}` (아래 이벤트 목록) |
+| `roomcare/{deviceId}/telemetry` | 엣지 → 클라우드 | `{measuredAt, temperature, humidity, co2, pm25, pm10}` |
+| `roomcare/{deviceId}/events` | 엣지 → 클라우드 | `{occurredAt, type, detail}` — `detail` 은 JSON 객체 (아래 이벤트 목록) |
+
+- 시간(`measuredAt`, `occurredAt`)은 Unix 시간(초, 소수점 포함)
+- 단위: 온도 °C, 습도 %, CO2 ppm, `pm25`(초미세먼지)·`pm10`(미세먼지) µg/m³
+- `pm10` 은 업데이트 전에 저장된 측정값이면 `null` 일 수 있음
+
+예시
+
+```json
+{"measuredAt": 1759370000.12, "temperature": 24.3, "humidity": 52.1, "co2": 812, "pm25": 14.2, "pm10": 23.5}
+{"occurredAt": 1759370003.48, "type": "mode_changed", "detail": {"mode": "offline"}}
+```
 | `roomcare/{deviceId}/status` | 엣지 → 클라우드 | `online` / `offline` (retained, LWT) |
 | `roomcare/{deviceId}/command` | 클라우드 → 엣지 | `{"actuator": "window", "on": true}` — actuator: `window`, `air_purifier`, `door` |
 

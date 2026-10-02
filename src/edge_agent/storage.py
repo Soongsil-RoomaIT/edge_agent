@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS readings (
     humidity    REAL    NOT NULL,
     co2         REAL    NOT NULL,
     pm25        REAL    NOT NULL,
-    synced      INTEGER NOT NULL DEFAULT 0
+    synced      INTEGER NOT NULL DEFAULT 0,
+    pm10        REAL
 );
 CREATE INDEX IF NOT EXISTS idx_readings_synced ON readings (synced, id);
 
@@ -44,6 +45,14 @@ class LocalStore:
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """이전 버전에서 만든 DB 파일에 새 컬럼 추가. 기존 행은 NULL 로 남는다."""
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(readings)")}
+        if "pm10" not in columns:
+            with self._conn:
+                self._conn.execute("ALTER TABLE readings ADD COLUMN pm10 REAL")
 
     def close(self) -> None:
         self._conn.close()
@@ -53,9 +62,9 @@ class LocalStore:
     def save_reading(self, r: Reading) -> int:
         with self._conn:
             cur = self._conn.execute(
-                "INSERT INTO readings (measured_at, temperature, humidity, co2, pm25)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (r.measured_at, r.temperature, r.humidity, r.co2, r.pm25),
+                "INSERT INTO readings (measured_at, temperature, humidity, co2, pm25, pm10)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (r.measured_at, r.temperature, r.humidity, r.co2, r.pm25, r.pm10),
             )
         return cur.lastrowid
 

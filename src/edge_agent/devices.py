@@ -18,7 +18,8 @@ class Reading:
     temperature: float  # C
     humidity: float  # %
     co2: float  # ppm
-    pm25: float  # ug/m3
+    pm25: float  # ug/m3, 초미세먼지
+    pm10: float  # ug/m3, 미세먼지
 
 
 class SensorReader(Protocol):
@@ -58,12 +59,15 @@ class MockSensorReader:
     def read(self) -> Reading:
         self._co2 = max(400.0, self._co2 + self._rng.uniform(-40, 60))
         self._pm25 = max(0.0, self._pm25 + self._rng.uniform(-3, 3))
+        # PM10 은 PM2.5 를 포함하므로 항상 그보다 크거나 같다
+        pm10 = self._pm25 * self._rng.uniform(1.4, 1.9)
         return Reading(
             measured_at=time.time(),
             temperature=round(self._rng.uniform(22, 27), 1),
             humidity=round(self._rng.uniform(40, 65), 1),
             co2=round(self._co2),
             pm25=round(self._pm25, 1),
+            pm10=round(pm10, 1),
         )
 
 

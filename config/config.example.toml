@@ -18,5 +18,6 @@ topic_prefix = "roomcare"
 [thresholds]
 co2_high = 1000.0
 pm25_high = 35.0
+pm10_high = 80.0
 humidity_high = 70.0
 temperature_high = 30.0

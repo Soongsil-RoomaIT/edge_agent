@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -189,6 +190,7 @@ class EdgeAgent:
                 "humidity": row["humidity"],
                 "co2": row["co2"],
                 "pm25": row["pm25"],
+                "pm10": row["pm10"],  # 이전 버전 DB 에 남은 행은 null
             }
             if not self.mqtt.publish_json(self.mqtt.topic_telemetry, payload):
                 break
@@ -197,7 +199,11 @@ class EdgeAgent:
 
         sent = []
         for row in self.store.unsynced_events():
-            payload = {"occurredAt": row["occurred_at"], "type": row["type"], "detail": row["detail"]}
+            payload = {
+                "occurredAt": row["occurred_at"],
+                "type": row["type"],
+                "detail": json.loads(row["detail"]),  # 문자열이 아니라 JSON 객체로 전송
+            }
             if not self.mqtt.publish_json(self.mqtt.topic_events, payload):
                 break
             sent.append(row["id"])

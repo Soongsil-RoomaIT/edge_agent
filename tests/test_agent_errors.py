@@ -16,7 +16,7 @@ class FlakySensor:
         if self.failures > 0:
             self.failures -= 1
             raise IOError("PMS7003: valid frame not received")
-        return Reading(measured_at=0.0, temperature=24.0, humidity=50.0, co2=1500.0, pm25=10.0)
+        return Reading(measured_at=0.0, temperature=24.0, humidity=50.0, co2=1500.0, pm25=10.0, pm10=20.0)
 
 
 class BrokenActuator(MockActuator):
