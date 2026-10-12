@@ -32,7 +32,7 @@ src/edge_agent/
 
 - 시간(`measuredAt`, `occurredAt`)은 Unix 시간(초, 소수점 포함)
 - 단위: 온도 °C, 습도 %, CO2 ppm, `pm25`(초미세먼지)·`pm10`(미세먼지) µg/m³
-- `pm10` 은 업데이트 전에 저장된 측정값이면 `null` 일 수 있음
+- `pm10` 은 `null` 일 수 있음 (업데이트 전에 저장된 측정값, 또는 센서 드라이버가 PM10 을 아직 주지 않을 때)
 
 예시
 
@@ -57,6 +57,8 @@ src/edge_agent/
 | `door_opened` / `door_closed` | `initial` | 문 상태 변경 (`initial=true` 는 시작 시 첫 상태) |
 | `sensor_error` / `sensor_recovered` | `error` / `failed_reads` | 센서 읽기 실패 / 복구 |
 | `actuator_error` | `actuator`, `on`, `error` | 액추에이터 동작 실패 |
+| `actuator_unavailable` | `actuator`, `reason` | 고장이나 상태를 몰라서 자동제어를 건너뜀 (사유가 바뀔 때만 1회) |
+| `actuator_available` | `actuator` | 위 상태에서 복구되어 자동제어 재개 |
 
 ## 오프라인 전환 시간 (NFR03: 10초 이내)
 

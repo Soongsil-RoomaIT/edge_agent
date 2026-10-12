@@ -64,7 +64,8 @@ class LocalStore:
             cur = self._conn.execute(
                 "INSERT INTO readings (measured_at, temperature, humidity, co2, pm25, pm10)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
-                (r.measured_at, r.temperature, r.humidity, r.co2, r.pm25, r.pm10),
+                # pm10 이 없는 Reading(hardware 구버전)도 저장할 수 있게 getattr 사용
+                (r.measured_at, r.temperature, r.humidity, r.co2, r.pm25, getattr(r, "pm10", None)),
             )
         return cur.lastrowid
 

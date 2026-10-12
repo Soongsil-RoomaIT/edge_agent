@@ -27,9 +27,9 @@ def decide(reading: Reading, t: Thresholds) -> list[Decision]:
         f"{name} {value} > {limit}"
         for name, value, limit in (
             ("pm25", reading.pm25, t.pm25_high),
-            ("pm10", reading.pm10, t.pm10_high),
+            ("pm10", getattr(reading, "pm10", None), t.pm10_high),
         )
-        if value > limit
+        if value is not None and value > limit
     ]
     stuffy = reading.co2 > t.co2_high
     humid = reading.humidity > t.humidity_high

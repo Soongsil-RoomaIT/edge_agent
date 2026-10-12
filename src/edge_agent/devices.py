@@ -19,7 +19,8 @@ class Reading:
     humidity: float  # %
     co2: float  # ppm
     pm25: float  # ug/m3, 초미세먼지
-    pm10: float  # ug/m3, 미세먼지
+    # ug/m3, 미세먼지. hardware 의 Reading 에는 아직 없을 수 있어서 선택 필드로 둔다.
+    pm10: float | None = None
 
 
 class SensorReader(Protocol):
@@ -32,7 +33,13 @@ class DoorSensor(Protocol):
 
 
 class Actuator(Protocol):
-    """켜기/끄기 두 상태로 다루는 액추에이터. 창문/문은 on=열림."""
+    """켜기/끄기 두 상태로 다루는 액추에이터. 창문/문은 on=열림.
+
+    hardware 드라이버는 아래 속성을 추가로 가질 수 있다 (있으면 agent 가 사용):
+        position: "open" | "closed" | "unknown" | "fault"   창문 (unknown = 중간/미확인)
+        state:    "on" | "off" | "unknown"                  가전 (상태를 모르면 is_on 이 예외)
+        fault:    str | None                                고장 사유 (사람이 점검해야 함)
+    """
 
     name: str
 

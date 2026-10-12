@@ -59,6 +59,8 @@ class EdgeAgent:
         self._stop = threading.Event()
         self._offline_since: float | None = None
         self._sensor_failures = 0
+        # 자동제어를 건너뛴 액추에이터와 그 사유. 같은 사유는 이벤트를 한 번만 남긴다.
+        self._actuator_issues: dict[str, str] = {}
 
         # paho 는 실제 라즈베리파이/개발 PC 에서만 필요하므로 여기서 import
         from .mqtt_client import EdgeMqttClient
@@ -170,8 +172,14 @@ class EdgeAgent:
                 continue
             try:
                 with self._actuator_lock:
-                    if act.is_on == d.on:
+                    current, issue = self._inspect_actuator(act)
+                    if issue is not None:
+                        self._report_actuator_issue(d.actuator, issue)
                         continue
+                    self._clear_actuator_issue(d.actuator)
+                    if current == d.on:
+                        continue
+                    # current 가 None 이면 창문이 중간/미확인 위치 -> 목표로 다시 보낸다 (set 은 멱등)
                     act.set(d.on)
             except Exception as e:
                 log.error("auto-control: %s -> %s failed: %s", d.actuator, d.on, e)
@@ -179,6 +187,44 @@ class EdgeAgent:
                 continue
             log.info("auto-control: %s -> %s (%s)", d.actuator, d.on, d.reason)
             self.store.log_event("auto_control", actuator=d.actuator, on=d.on, reason=d.reason)
+
+    @staticmethod
+    def _inspect_actuator(act: Actuator) -> tuple[bool | None, str | None]:
+        """(현재 상태, 자동제어를 하면 안 되는 사유) 를 돌려준다.
+
+        - 고장(fault)            -> 명령하지 않음. 사람이 점검해야 한다.
+        - 창문 position           -> "closed" 만 닫힘으로 본다. is_on=False 는 중간 위치일 수도 있다.
+        - 가전 state "unknown"    -> 명령하지 않음. 토글 버튼이라 모르는 상태에서 누르면 반대로 될 수 있다.
+        """
+        fault = getattr(act, "fault", None)
+        if fault:
+            return None, f"fault: {fault}"
+
+        position = getattr(act, "position", None)
+        if position is not None:
+            if position == "fault":
+                return None, "fault: position"
+            return {"open": True, "closed": False}.get(position), None
+
+        state = getattr(act, "state", None)
+        if state == "unknown":
+            return None, "state unknown"
+        try:
+            return act.is_on, None
+        except Exception as e:  # hardware 는 상태를 모르면 HardwareFault 를 낸다
+            return None, f"state error: {e}"
+
+    def _report_actuator_issue(self, name: str, issue: str) -> None:
+        if self._actuator_issues.get(name) == issue:
+            return
+        self._actuator_issues[name] = issue
+        log.warning("auto-control skipped for %s: %s", name, issue)
+        self.store.log_event("actuator_unavailable", actuator=name, reason=issue)
+
+    def _clear_actuator_issue(self, name: str) -> None:
+        if self._actuator_issues.pop(name, None) is not None:
+            log.info("auto-control resumed for %s", name)
+            self.store.log_event("actuator_available", actuator=name)
 
     def _flush_backlog(self) -> None:
         """로컬에 쌓인 미전송 측정값/이벤트를 클라우드로 전송."""
