@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -26,6 +26,47 @@ class Thresholds:
     pm10_high: float = 80.0  # ug/m3, 초과 시 환경부 '나쁨'
     humidity_high: float = 70.0  # %
     temperature_high: float = 30.0  # C
+
+
+# 클라우드 config 메시지의 키 (camelCase) -> Thresholds 필드
+THRESHOLD_KEYS = {
+    "co2High": "co2_high",
+    "pm25High": "pm25_high",
+    "pm10High": "pm10_high",
+    "humidityHigh": "humidity_high",
+    "temperatureHigh": "temperature_high",
+}
+
+# 원격으로 바꿀 수 있는 기준값의 안전 범위. 잘못된 값(예: CO2 5000)으로
+# 자동제어가 사실상 꺼지거나 창문이 계속 열리는 것을 막는다.
+SAFE_RANGES = {
+    "co2_high": (600.0, 2000.0),
+    "pm25_high": (15.0, 75.0),
+    "pm10_high": (30.0, 150.0),
+    "humidity_high": (40.0, 85.0),
+    "temperature_high": (24.0, 35.0),
+}
+
+
+def apply_threshold_update(current: Thresholds, update: object) -> Thresholds:
+    """클라우드에서 받은 기준값 변경을 검증해서 새 Thresholds 를 돌려준다.
+
+    일부 키만 보내도 된다. 하나라도 잘못되면 ValueError (전체 거부).
+    """
+    if not isinstance(update, dict) or not update:
+        raise ValueError("thresholds must be a non-empty object")
+    changes: dict[str, float] = {}
+    for key, value in update.items():
+        name = THRESHOLD_KEYS.get(key)
+        if name is None:
+            raise ValueError(f"unknown threshold: {key}")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{key} must be a number")
+        low, high = SAFE_RANGES[name]
+        if not low <= value <= high:
+            raise ValueError(f"{key}={value} outside safe range {low:g}..{high:g}")
+        changes[name] = float(value)
+    return replace(current, **changes)
 
 
 @dataclass

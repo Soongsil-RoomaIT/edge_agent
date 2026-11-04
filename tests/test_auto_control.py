@@ -40,3 +40,40 @@ def test_thresholds_are_exclusive():
         WINDOW: False,
         AIR_PURIFIER: False,
     }
+
+
+# --- 제습기 ---------------------------------------------------------------
+
+from edge_agent.devices import DEHUMIDIFIER  # noqa: E402
+
+WITH_DEHUMIDIFIER = {WINDOW, AIR_PURIFIER, DEHUMIDIFIER}
+
+
+def targets_with_dehumidifier(r: Reading) -> dict[str, bool]:
+    return {d.actuator: d.on for d in decide(r, Thresholds(), WITH_DEHUMIDIFIER)}
+
+
+def test_high_humidity_runs_dehumidifier_instead_of_opening_window():
+    assert targets_with_dehumidifier(reading(humidity=80)) == {
+        WINDOW: False,
+        AIR_PURIFIER: False,
+        DEHUMIDIFIER: True,
+    }
+
+
+def test_normal_humidity_turns_dehumidifier_off():
+    assert targets_with_dehumidifier(reading())[DEHUMIDIFIER] is False
+
+
+def test_dust_and_humidity_together():
+    # 창문 닫고 공기청정기 + 제습기
+    assert targets_with_dehumidifier(reading(humidity=80, pm25=60)) == {
+        WINDOW: False,
+        AIR_PURIFIER: True,
+        DEHUMIDIFIER: True,
+    }
+
+
+def test_co2_still_opens_window_with_dehumidifier():
+    t = targets_with_dehumidifier(reading(co2=1500, humidity=80))
+    assert t[WINDOW] is True and t[DEHUMIDIFIER] is True

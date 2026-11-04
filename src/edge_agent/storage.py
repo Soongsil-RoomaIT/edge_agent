@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS events (
     synced      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_events_synced ON events (synced, id);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key         TEXT    PRIMARY KEY,
+    value       TEXT    NOT NULL,
+    updated_at  REAL    NOT NULL
+);
 """
 
 
@@ -94,6 +100,22 @@ class LocalStore:
 
     def mark_events_synced(self, ids: list[int]) -> None:
         self._mark_synced("events", ids)
+
+    # --- settings -------------------------------------------------------
+
+    def get_setting(self, key: str) -> Any:
+        """클라우드에서 받은 설정 등. 없으면 None."""
+        row = self._conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return json.loads(row["value"]) if row else None
+
+    def set_setting(self, key: str, value: Any) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value,"
+                " updated_at = excluded.updated_at",
+                (key, json.dumps(value, ensure_ascii=False), time.time()),
+            )
 
     # --- maintenance ----------------------------------------------------
 

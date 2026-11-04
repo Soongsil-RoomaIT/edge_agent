@@ -4,7 +4,10 @@
     {prefix}/{device_id}/telemetry  엣지 -> 클라우드  센서 측정값
     {prefix}/{device_id}/events     엣지 -> 클라우드  모드 전환, 자동제어 실행 등
     {prefix}/{device_id}/status     엣지 -> 클라우드  "online"/"offline" (retained, LWT)
+    {prefix}/{device_id}/state      엣지 -> 클라우드  기기 상태 (retained, 바뀔 때만)
+    {prefix}/{device_id}/ack        엣지 -> 클라우드  원격 조작 명령 처리 결과
     {prefix}/{device_id}/command    클라우드 -> 엣지  액추에이터 원격 조작
+    {prefix}/{device_id}/config     클라우드 -> 엣지  자동제어 기준값 (retained 권장)
 """
 
 from __future__ import annotations
@@ -29,17 +32,22 @@ class EdgeMqttClient:
         on_connected: Callable[[], None],
         on_disconnected: Callable[[], None],
         on_command: Callable[[dict[str, Any]], None],
+        on_config: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._cfg = cfg
         base = f"{cfg.topic_prefix}/{device_id}"
         self.topic_telemetry = f"{base}/telemetry"
         self.topic_events = f"{base}/events"
         self.topic_status = f"{base}/status"
+        self.topic_state = f"{base}/state"
+        self.topic_ack = f"{base}/ack"
         self.topic_command = f"{base}/command"
+        self.topic_config = f"{base}/config"
 
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
         self._on_command = on_command
+        self._on_config = on_config
 
         c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"edge-{device_id}")
         if cfg.username:
@@ -65,11 +73,15 @@ class EdgeMqttClient:
         self._client.disconnect()
         self._client.loop_stop()
 
-    def publish_json(self, topic: str, payload: dict[str, Any], qos: int = 1) -> bool:
+    def publish_json(
+        self, topic: str, payload: dict[str, Any], qos: int = 1, retain: bool = False
+    ) -> bool:
         """연결되어 있고 큐잉에 성공하면 True. 실패하면 호출 쪽에서 로컬에 남겨둔다."""
         if not self._client.is_connected():
             return False
-        info = self._client.publish(topic, json.dumps(payload, ensure_ascii=False), qos=qos)
+        info = self._client.publish(
+            topic, json.dumps(payload, ensure_ascii=False), qos=qos, retain=retain
+        )
         return info.rc == mqtt.MQTT_ERR_SUCCESS
 
     # --- paho callbacks (네트워크 스레드에서 호출됨) -------------------------
@@ -79,7 +91,7 @@ class EdgeMqttClient:
             log.warning("MQTT connect failed: %s", reason_code)
             return
         log.info("MQTT connected")
-        client.subscribe(self.topic_command, qos=1)
+        client.subscribe([(self.topic_command, 1), (self.topic_config, 1)])
         client.publish(self.topic_status, "online", qos=1, retain=True)
         self._on_connected()
 
@@ -91,6 +103,13 @@ class EdgeMqttClient:
         try:
             payload = json.loads(msg.payload)
         except (ValueError, UnicodeDecodeError):
-            log.warning("invalid command payload: %r", msg.payload)
+            log.warning("invalid payload on %s: %r", msg.topic, msg.payload)
             return
-        self._on_command(payload)
+        if not isinstance(payload, dict):
+            log.warning("payload on %s is not an object: %r", msg.topic, payload)
+            return
+        if msg.topic == self.topic_config:
+            if self._on_config is not None:
+                self._on_config(payload)
+        else:
+            self._on_command(payload)

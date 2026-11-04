@@ -39,6 +39,7 @@ class Actuator(Protocol):
         position: "open" | "closed" | "unknown" | "fault"   창문 (unknown = 중간/미확인)
         state:    "on" | "off" | "unknown"                  가전 (상태를 모르면 is_on 이 예외)
         fault:    str | None                                고장 사유 (사람이 점검해야 함)
+        state_source: "SENSOR" | "ASSUMED"                  상태 메시지의 근거를 직접 지정할 때
     """
 
     name: str
@@ -52,6 +53,7 @@ class Actuator(Protocol):
 # 액추에이터 이름 (MQTT 명령, 자동제어 규칙에서 공통으로 사용)
 WINDOW = "window"
 AIR_PURIFIER = "air_purifier"
+DEHUMIDIFIER = "dehumidifier"
 DOOR = "door"  # 서보로 닫기만 가능 (set(False))
 
 

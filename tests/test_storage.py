@@ -64,3 +64,13 @@ def test_migrates_old_db_without_pm10(tmp_path):
 
     rows = store.unsynced_readings()
     assert [r["pm10"] for r in rows] == [None, 20.0]
+
+
+def test_settings_roundtrip():
+    store = LocalStore(":memory:")
+    assert store.get_setting("thresholds") is None
+
+    store.set_setting("thresholds", {"version": 1, "values": {"co2_high": 900}})
+    store.set_setting("thresholds", {"version": 2, "values": {"co2_high": 950}})
+
+    assert store.get_setting("thresholds") == {"version": 2, "values": {"co2_high": 950}}
