@@ -78,6 +78,12 @@ class AgentConfig:
     offline_grace: float = 2.0
     db_path: str = "data/edge.db"
     retention_days: int = 7
+    # status heartbeat 주기(초). 클라우드는 10초 동안 아무 메시지가 없으면 오프라인으로 본다.
+    status_interval: float = 3.0
+    # 클라우드 서버 heartbeat(cloud-status) 가 이 시간(초) 동안 안 오면 오프라인 모드로 전환.
+    # 브로커는 살아 있고 클라우드 서버만 죽은 경우를 잡는다. 0 = 사용 안 함 (클라우드가 아직 안 보냄)
+    # 켤 때는 timeout + offline_grace + 0.5 <= 10 이 되게 (예: 5)
+    cloud_heartbeat_timeout: float = 0.0
     use_mock_devices: bool = True
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     thresholds: Thresholds = field(default_factory=Thresholds)

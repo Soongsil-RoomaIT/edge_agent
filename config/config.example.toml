@@ -4,6 +4,8 @@ sample_interval = 2.0
 offline_grace = 2.0
 db_path = "data/edge.db"
 retention_days = 7
+status_interval = 3.0
+cloud_heartbeat_timeout = 0.0   # 클라우드가 cloud-status 를 보내기 시작하면 5.0
 use_mock_devices = true
 
 [mqtt]

@@ -3,6 +3,8 @@ from edge_agent.config import AgentConfig
 from edge_agent.devices import DOOR, MockDoorCloser, MockDoorSensor, MockSensorReader
 from edge_agent.storage import LocalStore
 
+from conftest import command
+
 
 def make_agent(door: MockDoorSensor) -> EdgeAgent:
     return EdgeAgent(
@@ -38,7 +40,7 @@ def test_remote_close_command_closes_door():
     door = MockDoorSensor(is_open=True)
     agent = make_agent(door)
 
-    agent._handle_command({"actuator": DOOR, "on": False})
+    agent._handle_command(command("door-1", "CLOSE"))
 
     assert door.is_open is False
 
@@ -47,6 +49,6 @@ def test_remote_open_command_is_ignored_by_closer():
     door = MockDoorSensor(is_open=False)
     agent = make_agent(door)
 
-    agent._handle_command({"actuator": DOOR, "on": True})
+    agent._handle_command(command("door-1", "OPEN"))
 
     assert door.is_open is False

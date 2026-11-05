@@ -36,6 +36,24 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_synced ON events (synced, id);
 
+-- 받은 원격 명령. 재시작이나 재전송 후에도 같은 commandId 는 한 번만 실행한다.
+CREATE TABLE IF NOT EXISTS commands (
+    command_id  TEXT    PRIMARY KEY,
+    received_at REAL    NOT NULL,
+    payload     TEXT    NOT NULL,
+    ack         TEXT                -- 보낸 ack (NULL = 실행 중)
+);
+
+-- 오프라인 자동제어로 실제 완료한 동작. 복구 시 recovery 리포트로 보낸다.
+CREATE TABLE IF NOT EXISTS local_actions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    executed_at REAL    NOT NULL,
+    actuator    TEXT    NOT NULL,
+    on_state    INTEGER NOT NULL,
+    reason      TEXT    NOT NULL,
+    reported    INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key         TEXT    PRIMARY KEY,
     value       TEXT    NOT NULL,
@@ -101,6 +119,56 @@ class LocalStore:
     def mark_events_synced(self, ids: list[int]) -> None:
         self._mark_synced("events", ids)
 
+    # --- commands -------------------------------------------------------
+
+    def get_command(self, command_id: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM commands WHERE command_id = ?", (command_id,)
+        ).fetchone()
+
+    def save_command(self, command_id: str, payload: dict[str, Any]) -> bool:
+        """처음 받은 명령이면 저장하고 True. 이미 있으면 False (중복)."""
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO commands (command_id, received_at, payload) VALUES (?, ?, ?)",
+                (command_id, time.time(), json.dumps(payload, ensure_ascii=False)),
+            )
+        return cur.rowcount == 1
+
+    def finish_command(self, command_id: str, ack: dict[str, Any]) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE commands SET ack = ? WHERE command_id = ?",
+                (json.dumps(ack, ensure_ascii=False), command_id),
+            )
+
+    # --- local actions --------------------------------------------------
+
+    def add_local_action(self, executed_at: float, actuator: str, on: bool, reason: str) -> int:
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO local_actions (executed_at, actuator, on_state, reason)"
+                " VALUES (?, ?, ?, ?)",
+                (executed_at, actuator, int(on), reason),
+            )
+        return cur.lastrowid
+
+    def unreported_local_actions(self, since: float, until: float) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM local_actions WHERE reported = 0 AND executed_at BETWEEN ? AND ?"
+            " ORDER BY executed_at",
+            (since, until),
+        ).fetchall()
+
+    def mark_local_actions_reported(self, ids: list[int]) -> None:
+        if not ids:
+            return
+        placeholders = ",".join("?" * len(ids))
+        with self._conn:
+            self._conn.execute(
+                f"UPDATE local_actions SET reported = 1 WHERE id IN ({placeholders})", ids
+            )
+
     # --- settings -------------------------------------------------------
 
     def get_setting(self, key: str) -> Any:
@@ -129,6 +197,8 @@ class LocalStore:
             self._conn.execute(
                 "DELETE FROM events WHERE synced = 1 AND occurred_at < ?", (cutoff,)
             )
+            self._conn.execute("DELETE FROM commands WHERE received_at < ?", (cutoff,))
+            self._conn.execute("DELETE FROM local_actions WHERE executed_at < ?", (cutoff,))
 
     def _mark_synced(self, table: str, ids: list[int]) -> None:
         if not ids:

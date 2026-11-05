@@ -4,12 +4,14 @@
 
 - 측정값은 항상 먼저 로컬에 저장하고, 전송 성공분만 synced 로 표시한다.
 - 연결 상태는 측정 주기와 별개로 TICK 마다 확인해서 10초 이내 전환(NFR03)을 보장한다.
-- 재연결되면 밀린 데이터를 전송하고 "reconnected" 이벤트를 보낸다 (클라우드가 FCM 알림 발송).
-- 문 열림/닫힘이 바뀌면 바로 이벤트를 보낸다 (클라우드의 현관문 상태 기반 자동화에 사용).
-  문 자동 닫기(서보)는 hardware 쪽 DoorAutoCloser 가 모드와 상관없이 로컬에서 처리한다.
-- 원격 조작 명령마다 ack 를 보내고(commandId 로 중복 실행 방지), 기기 상태가 바뀌면
-  state 메시지(retained)를 보낸다.
+  브로커 연결에 더해, 설정하면 클라우드 서버 heartbeat 도 본다 (브로커만 살아 있는 경우).
+- 원격 명령은 commandId 를 SQLite 에 기록해 한 번만 실행하고, expiresAt 이 지났으면 실행하지 않는다.
+  ack 는 명령을 받았을 때가 아니라 기기가 실제로 목표 상태에 도달했을 때 보낸다.
+- 기기 상태는 바뀔 때와 연결될 때 devices 로 보낸다. status heartbeat 는 주기적으로 보낸다.
+- 복구되면 오프라인 동안 실제 완료한 자동제어 동작을 recovery 로 먼저 보내고, 밀린 측정값을 보낸다.
 - 클라우드가 보낸 기준값(config)은 안전 범위를 검사한 뒤 적용하고 로컬에 저장한다.
+- 문 열림/닫힘이 바뀌면 바로 이벤트와 기기 상태를 보낸다.
+  문 10분 자동 닫기 정책은 클라우드가 담당한다 (hardware DoorAutoCloser 와 동시에 켜지 않는다).
 """
 
 from __future__ import annotations
@@ -18,11 +20,10 @@ import json
 import logging
 import threading
 import time
-from collections import OrderedDict
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
-from . import auto_control
+from . import auto_control, protocol
 from .config import AgentConfig, Thresholds, apply_threshold_update
 from .connectivity import ConnectivityMonitor, Mode
 from .devices import (
@@ -43,7 +44,18 @@ from .storage import LocalStore
 log = logging.getLogger(__name__)
 
 TICK = 0.5  # 연결 상태 확인 주기(초)
-RECENT_ACKS = 100  # 중복 명령 판별용으로 기억할 commandId 개수
+AUTO_ACTION_TIMEOUT = 30.0  # 자동제어 동작이 목표에 도달하기를 기다리는 시간(초). 창문 모터 15초 + 여유
+
+
+@dataclass
+class PendingAction:
+    """set() 을 보냈고 목표 상태 도달을 기다리는 동작."""
+
+    actuator: str
+    on: bool
+    deadline: float  # unix
+    reason: str
+    command_id: str | None = None  # None = 자동제어
 
 
 class EdgeAgent:
@@ -62,15 +74,18 @@ class EdgeAgent:
         self.door_sensor = door_sensor
         self._door_open: bool | None = None  # None = 아직 한 번도 안 읽음
         self.monitor = ConnectivityMonitor(cfg.offline_grace, clock=time.monotonic)
-        self._actuator_lock = threading.Lock()
+        self._actuator_lock = threading.RLock()
         self._stop = threading.Event()
         self._offline_since: float | None = None
         self._sensor_failures = 0
+        self._pm10_warned = False
         # 자동제어를 건너뛴 액추에이터와 그 사유. 같은 사유는 이벤트를 한 번만 남긴다.
         self._actuator_issues: dict[str, str] = {}
-        # commandId -> 보낸 ack. QoS 1 은 같은 명령이 두 번 올 수 있어서 다시 실행하지 않는다.
-        self._recent_acks: OrderedDict[str, dict[str, Any]] = OrderedDict()
-        self._last_state: dict[str, Any] | None = None  # 마지막으로 보낸 기기 상태
+        self._pending: dict[str, PendingAction] = {}  # 액추에이터 이름 -> 진행 중인 동작
+        self._last_states: dict[str, str] = {}  # 기기 id -> 마지막으로 보낸 상태
+        self._next_status = 0.0
+        self._broker_up = False
+        self._cloud_seen: float | None = None  # 마지막 클라우드 heartbeat (monotonic)
         self._config_version: int | None = None
         self._load_saved_thresholds()
 
@@ -80,10 +95,11 @@ class EdgeAgent:
         self.mqtt = EdgeMqttClient(
             cfg.mqtt,
             cfg.device_id,
-            on_connected=self.monitor.mark_connected,
-            on_disconnected=self.monitor.mark_disconnected,
+            on_connected=self._on_broker_connected,
+            on_disconnected=self._on_broker_disconnected,
             on_command=self._handle_command,
             on_config=self._handle_config,
+            on_cloud_status=self._handle_cloud_status,
         )
 
     # --- lifecycle ------------------------------------------------------
@@ -97,9 +113,12 @@ class EdgeAgent:
         next_prune = time.monotonic()
         try:
             while not self._stop.is_set():
+                self._check_cloud_lease()
                 self._check_mode()
                 self._check_door()
-                self._publish_state()
+                self._check_pending()
+                self._publish_devices()
+                self._publish_status()
 
                 now = time.monotonic()
                 if now >= next_sample:
@@ -118,7 +137,43 @@ class EdgeAgent:
     def stop(self) -> None:
         self._stop.set()
 
-    # --- steps ----------------------------------------------------------
+    # --- connectivity ---------------------------------------------------
+
+    def _cloud_alive(self) -> bool:
+        timeout = self.cfg.cloud_heartbeat_timeout
+        if timeout <= 0:
+            return True
+        seen = self._cloud_seen
+        return seen is not None and time.monotonic() - seen < timeout
+
+    def _on_broker_connected(self) -> None:
+        self._broker_up = True
+        self._next_status = 0.0  # 바로 status 를 보낸다
+        if self._cloud_alive():
+            self.monitor.mark_connected()
+
+    def _on_broker_disconnected(self) -> None:
+        self._broker_up = False
+        self.monitor.mark_disconnected()
+
+    def _handle_cloud_status(self, msg: dict[str, Any]) -> None:
+        """클라우드 서버 heartbeat. 예: {"online": true}. 클라우드 LWT 는 {"online": false}."""
+        if msg.get("online") is True:
+            self._cloud_seen = time.monotonic()
+            if self._broker_up:
+                self.monitor.mark_connected()
+        elif msg.get("online") is False:
+            self._cloud_seen = None
+            self.monitor.mark_disconnected()
+
+    def _check_cloud_lease(self) -> None:
+        """브로커는 붙어 있는데 클라우드 heartbeat 가 끊긴 경우를 끊김으로 본다."""
+        if not self._broker_up or self.cfg.cloud_heartbeat_timeout <= 0:
+            return
+        if self._cloud_alive():
+            self.monitor.mark_connected()
+        else:
+            self.monitor.mark_disconnected()  # 이미 끊김 상태면 아무것도 안 바뀜
 
     def _check_mode(self) -> None:
         changed = self.monitor.update()
@@ -126,16 +181,49 @@ class EdgeAgent:
             self._offline_since = time.time()
             log.warning("cloud unreachable -> OFFLINE auto-control mode")
             self.store.log_event("mode_changed", mode="offline")
+            self._next_status = 0.0  # 브로커가 살아 있으면 offlineMode=true 를 바로 알림
         elif changed is Mode.ONLINE:
-            offline_seconds = (
-                round(time.time() - self._offline_since) if self._offline_since else None
-            )
-            self._offline_since = None
-            self._last_state = None  # 오프라인 동안 바뀐 상태를 다시 보낸다
+            now = time.time()
+            offline_since, self._offline_since = self._offline_since, None
             log.info("cloud reachable -> ONLINE mode")
             self.store.log_event("mode_changed", mode="online")
-            self.store.log_event("reconnected", offline_seconds=offline_seconds)
+            if offline_since is not None:
+                self.store.log_event("reconnected", offline_seconds=round(now - offline_since))
+                self._send_recovery(offline_since, now)  # status 보다 먼저
+            self._last_states.clear()  # 기기 상태 스냅샷을 다시 보낸다
+            self._next_status = 0.0
+            self._publish_status()
             self._flush_backlog()
+
+    def _send_recovery(self, offline_since: float, recovered_at: float) -> None:
+        rows = self.store.unreported_local_actions(offline_since, recovered_at)
+        payload = {
+            "offlineSince": protocol.iso(offline_since),
+            "recoveredAt": protocol.iso(recovered_at),
+            "localActions": [
+                {
+                    "executedAt": protocol.iso(r["executed_at"]),
+                    "deviceId": protocol.DEVICE_IDS[r["actuator"]],
+                    "state": protocol.device_state(r["actuator"], bool(r["on_state"])),
+                    "reason": r["reason"][:500],
+                }
+                for r in rows
+                if r["actuator"] in protocol.DEVICE_IDS
+            ],
+        }
+        if self.mqtt.publish_json(self.mqtt.topic_recovery, payload):
+            self.store.mark_local_actions_reported([r["id"] for r in rows])
+            log.info("recovery report sent (%d local actions)", len(payload["localActions"]))
+
+    def _publish_status(self) -> None:
+        """status heartbeat. 브로커에 붙어 있으면 오프라인 모드여도 보낸다 (offlineMode=true)."""
+        if not self._broker_up or time.monotonic() < self._next_status:
+            return
+        payload = protocol.status(offline_mode=self.monitor.mode is Mode.OFFLINE)
+        if self.mqtt.publish_json(self.mqtt.topic_status, payload):
+            self._next_status = time.monotonic() + self.cfg.status_interval
+
+    # --- sensing --------------------------------------------------------
 
     def _check_door(self) -> None:
         if self.door_sensor is None:
@@ -153,6 +241,7 @@ class EdgeAgent:
         log.info("door %s%s", "opened" if is_open else "closed", " (initial)" if initial else "")
         self.store.log_event("door_opened" if is_open else "door_closed", initial=initial)
         if self.monitor.mode is Mode.ONLINE:
+            self._publish_devices()
             self._flush_backlog()  # 측정 주기를 기다리지 않고 바로 전송
 
     def _sample(self) -> None:
@@ -180,6 +269,8 @@ class EdgeAgent:
         else:
             self._flush_backlog()
 
+    # --- offline auto control -------------------------------------------
+
     def _apply_auto_control(self, reading) -> None:
         for d in auto_control.decide(reading, self.cfg.thresholds, self.actuators.keys()):
             act = self.actuators.get(d.actuator)
@@ -194,8 +285,14 @@ class EdgeAgent:
                     self._clear_actuator_issue(d.actuator)
                     if current == d.on:
                         continue
+                    pending = self._pending.get(d.actuator)
+                    if pending is not None and pending.on == d.on:
+                        continue  # 이미 같은 목표로 움직이는 중
                     # current 가 None 이면 창문이 중간/미확인 위치 -> 목표로 다시 보낸다 (set 은 멱등)
                     act.set(d.on)
+                    self._track(
+                        PendingAction(d.actuator, d.on, time.time() + AUTO_ACTION_TIMEOUT, d.reason)
+                    )
             except Exception as e:
                 log.error("auto-control: %s -> %s failed: %s", d.actuator, d.on, e)
                 self.store.log_event("actuator_error", actuator=d.actuator, on=d.on, error=str(e))
@@ -241,19 +338,111 @@ class EdgeAgent:
             log.info("auto-control resumed for %s", name)
             self.store.log_event("actuator_available", actuator=name)
 
+    # --- completion tracking --------------------------------------------
+
+    def _track(self, action: PendingAction) -> None:
+        """진행 중인 동작 등록. 같은 기기의 이전 동작은 새 동작으로 대체된다."""
+        with self._actuator_lock:
+            old = self._pending.pop(action.actuator, None)
+            if old is not None and old.command_id is not None:
+                # 원격 명령은 결과를 꼭 알려줘야 한다. 자동제어끼리는 조용히 대체.
+                self._send_ack(protocol.ack(old.command_id, False, "superseded by a newer command"))
+            self._pending[action.actuator] = action
+
+    def _check_pending(self) -> None:
+        """set() 을 보낸 동작이 목표 상태에 도달했는지 확인한다.
+
+        서보/모터는 비동기라 set() 이 돌아온 시점에는 아직 움직이는 중이다.
+        """
+        now = time.time()
+        with self._actuator_lock:
+            for action in list(self._pending.values()):
+                act = self.actuators.get(action.actuator)
+                if act is None:
+                    self._finish(action, False, "device disconnected")
+                    continue
+                current, issue = self._inspect_actuator(act)
+                moving = bool(getattr(act, "is_moving", False))
+                if issue is not None and issue.startswith("fault"):
+                    self._finish(action, False, issue)
+                elif current == action.on and not moving:
+                    state = protocol.device_state(action.actuator, action.on)
+                    self._finish(action, True, f"{action.actuator} reached {state}")
+                elif now > action.deadline:
+                    self._finish(action, False, "target state not confirmed before deadline")
+
+    def _finish(self, action: PendingAction, ok: bool, reason: str) -> None:
+        with self._actuator_lock:
+            if self._pending.get(action.actuator) is action:
+                del self._pending[action.actuator]
+        now = time.time()
+        if ok:
+            log.info("%s -> %s done (%s)", action.actuator, action.on, reason)
+        else:
+            log.warning("%s -> %s failed: %s", action.actuator, action.on, reason)
+            self.store.log_event(
+                "actuator_error",
+                actuator=action.actuator,
+                on=action.on,
+                error=reason,
+                commandId=action.command_id,
+            )
+        if action.command_id is not None:
+            self._send_ack(protocol.ack(action.command_id, ok, reason, now))
+        elif ok:
+            # 자동제어로 실제 완료한 동작 -> 복구 시 recovery 리포트로
+            self.store.add_local_action(now, action.actuator, action.on, action.reason)
+
+    # --- device state ---------------------------------------------------
+
+    def _device_states(self) -> dict[str, str]:
+        """기기 id -> OPEN/CLOSED/ON/OFF. 상태를 모르는 기기는 빠진다."""
+        states: dict[str, str] = {}
+        with self._actuator_lock:
+            for name, act in self.actuators.items():
+                if name == DOOR and self.door_sensor is not None:
+                    continue  # 문은 아래에서 센서값으로
+                current, _ = self._inspect_actuator(act)
+                state = protocol.device_state(name, current)
+                if state is not None and name in protocol.DEVICE_IDS:
+                    states[protocol.DEVICE_IDS[name]] = state
+        if self.door_sensor is not None and self._door_open is not None:
+            states[protocol.DEVICE_IDS[DOOR]] = protocol.device_state(DOOR, self._door_open)
+        return states
+
+    def _publish_devices(self) -> None:
+        """바뀐 기기 상태를 devices 토픽으로 보낸다 (온라인일 때만, 기기마다 한 메시지)."""
+        if self.monitor.mode is not Mode.ONLINE:
+            return
+        for device_id, state in self._device_states().items():
+            if self._last_states.get(device_id) == state:
+                continue
+            payload = {"id": device_id, "state": state, "updatedAt": protocol.iso()}
+            if self.mqtt.publish_json(self.mqtt.topic_devices, payload):
+                self._last_states[device_id] = state
+
+    # --- upload ---------------------------------------------------------
+
     def _flush_backlog(self) -> None:
         """로컬에 쌓인 미전송 측정값/이벤트를 클라우드로 전송."""
         sent: list[int] = []
         for row in self.store.unsynced_readings():
+            if row["pm10"] is None:
+                # 클라우드는 5개 값이 모두 있어야 받는다. 없는 값을 만들어 보내지 않는다.
+                if not self._pm10_warned:
+                    log.warning("reading without pm10 is not sent (sensor driver gives no PM10)")
+                    self._pm10_warned = True
+                sent.append(row["id"])
+                continue
             payload = {
-                "measuredAt": row["measured_at"],
+                "measuredAt": protocol.iso(row["measured_at"]),
                 "temperature": row["temperature"],
                 "humidity": row["humidity"],
                 "co2": row["co2"],
                 "pm25": row["pm25"],
-                "pm10": row["pm10"],  # 이전 버전 DB 에 남은 행은 null
+                "pm10": row["pm10"],
             }
-            if not self.mqtt.publish_json(self.mqtt.topic_telemetry, payload):
+            if not self.mqtt.publish_json(self.mqtt.topic_sensors, payload):
                 break
             sent.append(row["id"])
         self.store.mark_readings_synced(sent)
@@ -261,7 +450,7 @@ class EdgeAgent:
         sent = []
         for row in self.store.unsynced_events():
             payload = {
-                "occurredAt": row["occurred_at"],
+                "occurredAt": protocol.iso(row["occurred_at"]),
                 "type": row["type"],
                 "detail": json.loads(row["detail"]),  # 문자열이 아니라 JSON 객체로 전송
             }
@@ -270,114 +459,80 @@ class EdgeAgent:
             sent.append(row["id"])
         self.store.mark_events_synced(sent)
 
-    # --- device state ---------------------------------------------------
-
-    def _device_states(self) -> dict[str, dict[str, Any]]:
-        """기기별 상태. on=None 은 상태를 모름.
-
-        source: SENSOR  = 센서로 확인한 상태 (창문 리밋 스위치, 문 터치 센서)
-                ASSUMED = 마지막 명령으로 추정한 상태 (버튼 누르는 서보, Mock)
-        """
-        states: dict[str, dict[str, Any]] = {}
-        with self._actuator_lock:
-            for name, act in self.actuators.items():
-                if name == DOOR and self.door_sensor is not None:
-                    continue  # 문은 아래에서 센서값으로
-                states[name] = self._describe_actuator(act)
-        if self.door_sensor is not None:
-            states[DOOR] = {"on": self._door_open, "source": "SENSOR", "fault": None}
-        return states
-
-    @staticmethod
-    def _describe_actuator(act: Actuator) -> dict[str, Any]:
-        info: dict[str, Any] = {}
-        position = getattr(act, "position", None)
-        if position is not None:
-            info["on"] = {"open": True, "closed": False}.get(position)
-            info["position"] = position
-            source = "SENSOR"
-        else:
-            if getattr(act, "state", None) == "unknown":
-                info["on"] = None
-            else:
-                try:
-                    info["on"] = bool(act.is_on)
-                except Exception:
-                    info["on"] = None
-            source = "ASSUMED"
-        info["source"] = getattr(act, "state_source", source)
-        info["fault"] = getattr(act, "fault", None) or None
-        return info
-
-    def _publish_state(self) -> None:
-        """기기 상태가 바뀌었으면 state 토픽으로 보낸다 (온라인일 때만)."""
-        if self.monitor.mode is not Mode.ONLINE:
-            return
-        states = self._device_states()
-        if states == self._last_state:
-            return
-        payload = {"reportedAt": time.time(), "devices": states}
-        if self.mqtt.publish_json(self.mqtt.topic_state, payload, retain=True):
-            self._last_state = states
-
     # --- remote control -------------------------------------------------
 
-    def _handle_command(self, cmd: dict[str, Any]) -> None:
-        """클라우드 원격 조작. 예: {"commandId": "c-123", "actuator": "window", "on": true}
+    def _handle_command(self, msg: dict[str, Any]) -> None:
+        """클라우드 원격 명령 (MQTT 네트워크 스레드에서 호출).
 
-        처리 결과를 ack 토픽으로 보낸다. status:
-            accepted  액추에이터에 명령을 보냄 (서보는 비동기라 실제 완료는 state 메시지로 확인)
-            rejected  잘못된 명령 (알 수 없는 기기, on 이 bool 이 아님, 문 열기)
-            failed    액추에이터 오류
+        {"commandId": "uuid", "deviceId": "window-1", "action": "OPEN",
+         "reason": "...", "issuedAt": "...", "expiresAt": "..."}
+
+        - 같은 commandId 는 한 번만 실행 (SQLite 에 기록, 재시작 후에도 유지). 다시 오면 보낸 ack 를 재전송.
+        - expiresAt 이 지났거나 잘못된 명령은 실행하지 않고 FAILED ack.
+        - 실행하면 목표 상태 도달을 확인한 뒤 EXECUTED ack (_check_pending).
         """
-        command_id = cmd.get("commandId")
-        if command_id is not None and command_id in self._recent_acks:
-            log.info("duplicate command %s ignored, re-sending ack", command_id)
-            self._publish_ack(self._recent_acks[command_id])
+        command_id = msg.get("commandId")
+        if not isinstance(command_id, str) or not command_id or len(command_id) > 100:
+            log.warning("ignored command without valid commandId: %s", msg)
             return
 
-        ack = self._execute_command(cmd)
-        ack["ackedAt"] = time.time()
-        if command_id is not None:
-            self._recent_acks[command_id] = ack
-            while len(self._recent_acks) > RECENT_ACKS:
-                self._recent_acks.popitem(last=False)
-        self._publish_ack(ack)
+        if not self.store.save_command(command_id, msg):
+            self._handle_duplicate(command_id)
+            return
 
-    def _execute_command(self, cmd: dict[str, Any]) -> dict[str, Any]:
-        name, on = cmd.get("actuator"), cmd.get("on")
-        ack: dict[str, Any] = {"commandId": cmd.get("commandId"), "actuator": name, "on": on}
+        try:
+            cmd = protocol.parse_command(msg)
+        except protocol.CommandError as e:
+            log.warning("rejected command %s: %s", command_id, e)
+            self._send_ack(protocol.ack(command_id, False, str(e)))
+            return
 
-        act = self.actuators.get(name)
-        error = None
+        act = self.actuators.get(cmd.actuator)
         if act is None:
-            error = f"unknown actuator: {name}"
-        elif not isinstance(on, bool):
-            error = "'on' must be true or false"
-        elif name == DOOR and on:
-            error = "door can only be closed"
-        if error is not None:
-            log.warning("rejected command %s: %s", cmd, error)
-            return {**ack, "status": "rejected", "error": error}
+            self._send_ack(protocol.ack(command_id, False, f"{cmd.actuator} is not connected"))
+            return
 
         try:
             with self._actuator_lock:
-                act.set(on)
+                act.set(cmd.on)
+                self._track(
+                    PendingAction(
+                        cmd.actuator, cmd.on, cmd.expires_at, "remote command", command_id
+                    )
+                )
         except Exception as e:
-            log.error("remote command: %s -> %s failed: %s", name, on, e)
+            log.error("remote command: %s -> %s failed: %s", cmd.actuator, cmd.on, e)
             self.store.log_event(
-                "actuator_error", actuator=name, on=on, error=str(e), commandId=ack["commandId"]
+                "actuator_error", actuator=cmd.actuator, on=cmd.on, error=str(e), commandId=command_id
             )
-            return {**ack, "status": "failed", "error": str(e)}
+            self._send_ack(protocol.ack(command_id, False, str(e)))
+            return
 
-        log.info("remote command: %s -> %s", name, on)
-        self.store.log_event("remote_command", actuator=name, on=on, commandId=ack["commandId"])
-        return {**ack, "status": "accepted"}
+        log.info("remote command %s: %s -> %s", command_id, cmd.actuator, cmd.on)
+        self.store.log_event(
+            "remote_command", actuator=cmd.actuator, on=cmd.on, commandId=command_id
+        )
 
-    def _publish_ack(self, ack: dict[str, Any]) -> None:
-        # 명령은 온라인일 때만 오므로 ack 는 로컬에 쌓지 않고 바로 보낸다
+    def _handle_duplicate(self, command_id: str) -> None:
+        row = self.store.get_command(command_id)
+        if row is not None and row["ack"] is not None:
+            log.info("duplicate command %s, re-sending ack", command_id)
+            self.mqtt.publish_json(self.mqtt.topic_ack, json.loads(row["ack"]))
+            return
+        with self._actuator_lock:
+            running = any(a.command_id == command_id for a in self._pending.values())
+        if running:
+            log.info("duplicate command %s ignored (still running)", command_id)
+            return
+        # 실행 중에 에이전트가 재시작된 명령. 다시 실행하지 않는다.
+        self._send_ack(protocol.ack(command_id, False, "interrupted by edge restart; check device state"))
+
+    def _send_ack(self, ack: dict[str, Any]) -> None:
+        self.store.finish_command(ack["commandId"], ack)
+        # 명령은 온라인일 때만 오므로 ack 는 로컬에 쌓지 않고 바로 보낸다.
+        # 못 보내면 클라우드는 타임아웃으로 처리하고, 같은 명령이 다시 오면 저장된 ack 를 재전송한다.
         if not self.mqtt.publish_json(self.mqtt.topic_ack, ack):
-            log.warning("failed to send ack for command %s", ack.get("commandId"))
+            log.warning("failed to send ack for command %s", ack["commandId"])
 
     # --- config ---------------------------------------------------------
 
@@ -441,7 +596,7 @@ def build_agent(cfg: AgentConfig) -> EdgeAgent:
     else:
         # TODO: hardware 레포의 실제 드라이버 연결
         #   RoomSensorReader, WindowActuator, ServoButtonPurifier,
-        #   TouchDoorSensor + DoorCloserServo + DoorAutoCloser
+        #   TouchDoorSensor + DoorCloserServo (DoorAutoCloser 는 쓰지 않음: 클라우드가 담당)
         #   ServoButtonDehumidifier (bundle 의 dehumidifier=True, 없으면 습도는 창문 환기로 처리)
         raise NotImplementedError("real hardware drivers are not wired yet")
 

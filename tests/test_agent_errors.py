@@ -5,6 +5,8 @@ from edge_agent.config import AgentConfig
 from edge_agent.devices import WINDOW, MockActuator, Reading
 from edge_agent.storage import LocalStore
 
+from conftest import command
+
 
 class FlakySensor:
     """지정한 횟수만큼 실패한 뒤 정상값을 돌려준다."""
@@ -57,6 +59,6 @@ def test_actuator_failure_in_auto_control_does_not_crash():
 def test_actuator_failure_in_remote_command_does_not_crash():
     agent = make_agent(FlakySensor(failures=0), {WINDOW: BrokenActuator(WINDOW)})
 
-    agent._handle_command({"actuator": WINDOW, "on": True})
+    agent._handle_command(command("window-1", "OPEN"))
 
     assert event_types(agent) == ["actuator_error"]
