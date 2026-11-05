@@ -1,8 +1,7 @@
-"""기기 상태 메시지 (프론트엔드 device.state, stateSource 로 전달)."""
+"""기기 상태 (roomait-v1 devices) 와 status heartbeat."""
 
-from edge_agent.agent import EdgeAgent
-from edge_agent.config import AgentConfig
-from edge_agent.connectivity import Mode
+from conftest import make_agent
+
 from edge_agent.devices import (
     AIR_PURIFIER,
     DOOR,
@@ -10,16 +9,10 @@ from edge_agent.devices import (
     MockActuator,
     MockDoorCloser,
     MockDoorSensor,
-    MockSensorReader,
 )
-from edge_agent.storage import LocalStore
-
-from test_commands import FakeMqtt
 
 
 class LimitSwitchWindow:
-    """hardware WindowActuator 흉내: 리밋 스위치로 위치를 안다."""
-
     name = WINDOW
 
     def __init__(self, position: str) -> None:
@@ -47,95 +40,94 @@ class UnknownPurifier:
         pass
 
 
-def make_agent(actuators, door_sensor=None, online=True) -> tuple[EdgeAgent, FakeMqtt]:
-    agent = EdgeAgent(
-        AgentConfig(),
-        MockSensorReader(seed=0),
-        actuators,
-        LocalStore(":memory:"),
-        door_sensor=door_sensor,
-    )
-    agent.mqtt = FakeMqtt()
-    if online:
-        agent.monitor.mark_connected()
-        agent.monitor.update()
-        assert agent.monitor.mode is Mode.ONLINE
-    return agent, agent.mqtt
+def devices(agent) -> dict[str, str]:
+    return {p["id"]: p["state"] for p in agent.mqtt.on(agent.mqtt.topic_devices)}
 
 
-def states(mqtt: FakeMqtt) -> list[dict]:
-    return [p for t, p, _ in mqtt.sent if t == mqtt.topic_state]
-
-
-def test_state_sources_and_values():
+def test_snapshot_is_sent_per_device_on_connect():
     door = MockDoorSensor(is_open=True)
-    agent, mqtt = make_agent(
+    agent = make_agent(
         {
             WINDOW: LimitSwitchWindow("closed"),
             AIR_PURIFIER: MockActuator(AIR_PURIFIER),
             DOOR: MockDoorCloser(door),
         },
         door_sensor=door,
+        online=True,
     )
     agent._check_door()
+    agent._publish_devices()
 
-    agent._publish_state()
-
-    (payload,) = states(mqtt)
-    devices = payload["devices"]
-    assert devices[WINDOW] == {"on": False, "position": "closed", "source": "SENSOR", "fault": None}
-    assert devices[AIR_PURIFIER] == {"on": False, "source": "ASSUMED", "fault": None}
-    assert devices[DOOR] == {"on": True, "source": "SENSOR", "fault": None}
-    assert "reportedAt" in payload
+    assert devices(agent) == {"window-1": "CLOSED", "purifier-1": "OFF", "door-1": "OPEN"}
+    msg = agent.mqtt.on(agent.mqtt.topic_devices)[0]
+    assert set(msg) == {"id", "state", "updatedAt"}
+    assert all(not retain for t, _, retain in agent.mqtt.sent if t == agent.mqtt.topic_devices)
 
 
-def test_state_is_retained_and_sent_only_on_change():
+def test_only_changed_device_is_sent_again():
     window = LimitSwitchWindow("closed")
-    agent, mqtt = make_agent({WINDOW: window})
+    agent = make_agent({WINDOW: window, AIR_PURIFIER: MockActuator(AIR_PURIFIER)}, online=True)
+    agent._publish_devices()
+    agent._publish_devices()
+    assert len(agent.mqtt.on(agent.mqtt.topic_devices)) == 2
 
-    agent._publish_state()
-    agent._publish_state()  # 변화 없음
     window.set(True)
-    agent._publish_state()
+    agent._publish_devices()
 
-    assert len(states(mqtt)) == 2
-    assert states(mqtt)[1]["devices"][WINDOW]["on"] is True
-    assert all(retain for t, _, retain in mqtt.sent if t == mqtt.topic_state)
-
-
-def test_state_not_sent_while_offline():
-    agent, mqtt = make_agent({WINDOW: LimitSwitchWindow("closed")}, online=False)
-
-    agent._publish_state()
-
-    assert states(mqtt) == []
+    msgs = agent.mqtt.on(agent.mqtt.topic_devices)
+    assert len(msgs) == 3
+    assert msgs[-1]["id"] == "window-1" and msgs[-1]["state"] == "OPEN"
 
 
-def test_unknown_appliance_state_is_null():
-    agent, mqtt = make_agent({AIR_PURIFIER: UnknownPurifier()})
-
-    agent._publish_state()
-
-    assert states(mqtt)[0]["devices"][AIR_PURIFIER]["on"] is None
-
-
-def test_fault_is_reported():
+def test_unknown_or_faulted_state_is_not_sent():
     window = LimitSwitchWindow("unknown")
-    window.fault = "limit switch not reached"
-    agent, mqtt = make_agent({WINDOW: window})
+    agent = make_agent({WINDOW: window, AIR_PURIFIER: UnknownPurifier()}, online=True)
 
-    agent._publish_state()
+    agent._publish_devices()
 
-    w = states(mqtt)[0]["devices"][WINDOW]
-    assert w["on"] is None
-    assert w["fault"] == "limit switch not reached"
+    assert devices(agent) == {}  # 계약에 unknown 값이 없어서 보내지 않는다
 
 
-def test_state_is_resent_after_reconnect():
-    agent, mqtt = make_agent({WINDOW: LimitSwitchWindow("closed")})
-    agent._publish_state()
+def test_devices_not_sent_while_offline():
+    agent = make_agent({WINDOW: LimitSwitchWindow("closed")})
 
-    agent._last_state = None  # _check_mode 가 ONLINE 복귀 시 하는 일
-    agent._publish_state()
+    agent._publish_devices()
 
-    assert len(states(mqtt)) == 2
+    assert devices(agent) == {}
+
+
+def test_snapshot_is_resent_after_reconnect():
+    agent = make_agent({WINDOW: LimitSwitchWindow("closed")}, online=True)
+    agent._publish_devices()
+    assert len(agent.mqtt.on(agent.mqtt.topic_devices)) == 1
+
+    agent._on_broker_disconnected()
+    agent.monitor._disconnected_since -= 10  # 유예 시간 지남
+    agent._check_mode()
+    agent._on_broker_connected()
+    agent._check_mode()
+    agent._publish_devices()
+
+    assert len(agent.mqtt.on(agent.mqtt.topic_devices)) == 2
+
+
+def test_status_heartbeat():
+    agent = make_agent({}, online=True)
+
+    statuses = agent.mqtt.on(agent.mqtt.topic_status)
+    assert statuses[-1] == {"online": True, "offlineMode": False}
+
+    agent._publish_status()  # 주기 전에는 다시 안 보냄
+    assert len(agent.mqtt.on(agent.mqtt.topic_status)) == len(statuses)
+
+    agent._next_status = 0
+    agent._publish_status()
+    assert len(agent.mqtt.on(agent.mqtt.topic_status)) == len(statuses) + 1
+
+
+def test_status_not_sent_without_broker():
+    agent = make_agent({})
+
+    agent._publish_status()
+
+    assert agent.mqtt.on(agent.mqtt.topic_status) == []

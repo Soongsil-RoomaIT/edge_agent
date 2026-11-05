@@ -1,36 +1,36 @@
-"""원격 조작 명령의 ack (프론트엔드 command.ack 로 전달)."""
+"""원격 명령 (roomait-v1 commands -> ack)."""
 
-from edge_agent.agent import EdgeAgent
-from edge_agent.config import AgentConfig
-from edge_agent.devices import DOOR, WINDOW, MockActuator, MockDoorCloser, MockDoorSensor, MockSensorReader
+import time
+
+from conftest import command, event_types, make_agent
+
+from edge_agent.devices import AIR_PURIFIER, DOOR, WINDOW, MockActuator, MockDoorCloser, MockDoorSensor
 from edge_agent.storage import LocalStore
 
 
-class FakeMqtt:
-    topic_telemetry = "t/telemetry"
-    topic_events = "t/events"
-    topic_state = "t/state"
-    topic_ack = "t/ack"
+class SlowWindow:
+    """hardware WindowActuator 흉내: set() 은 바로 돌아오고, 모터가 움직인 뒤 position 이 바뀐다."""
+
+    name = WINDOW
 
     def __init__(self) -> None:
-        self.sent: list[tuple[str, dict, bool]] = []
+        self.position = "closed"
+        self.fault = None
+        self.is_moving = False
+        self.calls: list[bool] = []
 
-    def publish_json(self, topic: str, payload: dict, qos: int = 1, retain: bool = False) -> bool:
-        self.sent.append((topic, payload, retain))
-        return True
-
-    def acks(self) -> list[dict]:
-        return [p for t, p, _ in self.sent if t == self.topic_ack]
-
-
-class CountingWindow(MockActuator):
-    def __init__(self) -> None:
-        super().__init__(WINDOW)
-        self.calls = 0
+    @property
+    def is_on(self) -> bool:
+        return self.position == "open"
 
     def set(self, on: bool) -> None:
-        self.calls += 1
-        super().set(on)
+        self.calls.append(on)
+        self.is_moving = True
+        self.position = "opening" if on else "closing"
+
+    def arrive(self) -> None:
+        self.position = "open" if self.position == "opening" else "closed"
+        self.is_moving = False
 
 
 class BrokenWindow(MockActuator):
@@ -41,86 +41,160 @@ class BrokenWindow(MockActuator):
         raise RuntimeError("servo stalled")
 
 
-def make_agent(actuators) -> tuple[EdgeAgent, FakeMqtt]:
-    agent = EdgeAgent(AgentConfig(), MockSensorReader(seed=0), actuators, LocalStore(":memory:"))
-    agent.mqtt = FakeMqtt()
-    return agent, agent.mqtt
+def test_ack_is_sent_only_after_target_is_reached():
+    window = SlowWindow()
+    agent = make_agent({WINDOW: window}, online=True)
+    cmd = command("window-1", "OPEN")
+
+    agent._handle_command(cmd)
+    agent._check_pending()
+    assert agent.mqtt.acks() == []  # 아직 움직이는 중
+
+    window.arrive()
+    agent._check_pending()
+
+    (ack,) = agent.mqtt.acks()
+    assert ack["commandId"] == cmd["commandId"]
+    assert ack["status"] == "EXECUTED"
+    assert ack["executedAt"].endswith("Z")
+    assert set(ack) == {"commandId", "status", "reason", "executedAt"}
 
 
-def test_accepted_command_is_acked_with_command_id():
-    window = CountingWindow()
-    agent, mqtt = make_agent({WINDOW: window})
+def test_not_reaching_target_before_expiry_fails():
+    window = SlowWindow()
+    agent = make_agent({WINDOW: window}, online=True)
+    agent._handle_command(command("window-1", "OPEN", ttl=0.05))
 
-    agent._handle_command({"commandId": "c-1", "actuator": WINDOW, "on": True})
+    time.sleep(0.1)
+    agent._check_pending()
 
-    (ack,) = mqtt.acks()
-    assert ack["commandId"] == "c-1"
-    assert ack["status"] == "accepted"
-    assert ack["actuator"] == WINDOW and ack["on"] is True
-    assert "ackedAt" in ack
-    assert window.is_on is True
-
-
-def test_duplicate_command_is_not_executed_twice():
-    # QoS 1 은 같은 메시지가 다시 올 수 있다 -> 실행은 한 번, ack 는 다시 보냄
-    window = CountingWindow()
-    agent, mqtt = make_agent({WINDOW: window})
-
-    agent._handle_command({"commandId": "c-1", "actuator": WINDOW, "on": True})
-    agent._handle_command({"commandId": "c-1", "actuator": WINDOW, "on": True})
-
-    assert window.calls == 1
-    assert len(mqtt.acks()) == 2
-    assert mqtt.acks()[0] == mqtt.acks()[1]
+    (ack,) = agent.mqtt.acks()
+    assert ack["status"] == "FAILED"
+    assert "deadline" in ack["reason"]
 
 
-def test_unknown_actuator_is_rejected():
-    agent, mqtt = make_agent({})
+def test_fault_while_moving_fails():
+    window = SlowWindow()
+    agent = make_agent({WINDOW: window}, online=True)
+    agent._handle_command(command("window-1", "OPEN"))
 
-    agent._handle_command({"commandId": "c-2", "actuator": "tv", "on": True})
+    window.fault = "obstruction"
+    agent._check_pending()
 
-    (ack,) = mqtt.acks()
-    assert ack["status"] == "rejected"
-    assert "unknown actuator" in ack["error"]
+    assert agent.mqtt.acks()[0]["status"] == "FAILED"
+    assert "obstruction" in agent.mqtt.acks()[0]["reason"]
 
 
-def test_non_boolean_on_is_rejected():
-    agent, mqtt = make_agent({WINDOW: CountingWindow()})
+def test_duplicate_command_runs_once_and_resends_ack():
+    window = SlowWindow()
+    agent = make_agent({WINDOW: window}, online=True)
+    cmd = command("window-1", "OPEN")
 
-    agent._handle_command({"commandId": "c-3", "actuator": WINDOW, "on": "yes"})
+    agent._handle_command(cmd)
+    agent._handle_command(cmd)  # 실행 중 중복 -> 무시
+    window.arrive()
+    agent._check_pending()
+    agent._handle_command(cmd)  # 완료 후 중복 -> ack 재전송
 
-    assert mqtt.acks()[0]["status"] == "rejected"
+    assert window.calls == [True]
+    assert len(agent.mqtt.acks()) == 2
+    assert agent.mqtt.acks()[0] == agent.mqtt.acks()[1]
+
+
+def test_duplicate_after_restart_is_not_executed_again(tmp_path):
+    db = tmp_path / "edge.db"
+    cmd = command("window-1", "OPEN")
+    first = make_agent({WINDOW: SlowWindow()}, store=LocalStore(db), online=True)
+    first._handle_command(cmd)  # 완료 전에 재시작
+    first.store.close()
+
+    window = SlowWindow()
+    restarted = make_agent({WINDOW: window}, store=LocalStore(db), online=True)
+    restarted._handle_command(cmd)
+
+    assert window.calls == []
+    (ack,) = restarted.mqtt.acks()
+    assert ack["status"] == "FAILED"
+    assert "restart" in ack["reason"]
+
+
+def test_expired_command_is_not_executed():
+    window = SlowWindow()
+    agent = make_agent({WINDOW: window}, online=True)
+
+    agent._handle_command(command("window-1", "OPEN", ttl=-1))
+
+    assert window.calls == []
+    assert agent.mqtt.acks()[0]["status"] == "FAILED"
+    assert "expired" in agent.mqtt.acks()[0]["reason"]
+
+
+def test_unknown_device_fails():
+    agent = make_agent({}, online=True)
+
+    agent._handle_command(command("tv-1", "ON"))
+
+    assert "unknown device" in agent.mqtt.acks()[0]["reason"]
+
+
+def test_action_must_match_device_type():
+    agent = make_agent({AIR_PURIFIER: MockActuator(AIR_PURIFIER)}, online=True)
+
+    agent._handle_command(command("purifier-1", "OPEN"))
+
+    assert agent.mqtt.acks()[0]["status"] == "FAILED"
 
 
 def test_door_open_is_rejected():
     door = MockDoorSensor(is_open=False)
-    agent, mqtt = make_agent({DOOR: MockDoorCloser(door)})
+    agent = make_agent({DOOR: MockDoorCloser(door)}, online=True)
 
-    agent._handle_command({"commandId": "c-4", "actuator": DOOR, "on": True})
+    agent._handle_command(command("door-1", "OPEN"))
 
-    ack = mqtt.acks()[0]
-    assert ack["status"] == "rejected"
-    assert ack["error"] == "door can only be closed"
+    assert agent.mqtt.acks()[0]["reason"] == "door can only be closed"
 
 
-def test_actuator_failure_is_acked_as_failed():
-    agent, mqtt = make_agent({WINDOW: BrokenWindow()})
+def test_door_close_is_confirmed_by_door_sensor():
+    door = MockDoorSensor(is_open=True)
+    agent = make_agent({DOOR: MockDoorCloser(door)}, door_sensor=door, online=True)
 
-    agent._handle_command({"commandId": "c-5", "actuator": WINDOW, "on": True})
+    agent._handle_command(command("door-1", "CLOSE"))
+    agent._check_pending()
 
-    ack = mqtt.acks()[0]
-    assert ack["status"] == "failed"
-    assert ack["error"] == "servo stalled"
-    types = [r["type"] for r in agent.store.unsynced_events()]
-    assert types == ["actuator_error"]
+    assert door.is_open is False
+    assert agent.mqtt.acks()[0]["status"] == "EXECUTED"
 
 
-def test_command_without_id_still_works():
-    window = CountingWindow()
-    agent, mqtt = make_agent({WINDOW: window})
+def test_actuator_exception_fails_immediately():
+    agent = make_agent({WINDOW: BrokenWindow()}, online=True)
 
-    agent._handle_command({"actuator": WINDOW, "on": True})
-    agent._handle_command({"actuator": WINDOW, "on": True})
+    agent._handle_command(command("window-1", "OPEN"))
 
-    assert window.calls == 2  # id 가 없으면 중복 판별을 못 한다
-    assert mqtt.acks()[0]["commandId"] is None
+    assert agent.mqtt.acks()[0]["status"] == "FAILED"
+    assert agent.mqtt.acks()[0]["reason"] == "servo stalled"
+    assert "actuator_error" in event_types(agent)
+
+
+def test_newer_command_supersedes_running_one():
+    window = SlowWindow()
+    agent = make_agent({WINDOW: window}, online=True)
+    first, second = command("window-1", "OPEN"), command("window-1", "CLOSE")
+
+    agent._handle_command(first)
+    agent._handle_command(second)
+
+    (ack,) = agent.mqtt.acks()
+    assert ack["commandId"] == first["commandId"]
+    assert ack["status"] == "FAILED" and "superseded" in ack["reason"]
+
+
+def test_command_without_id_is_ignored():
+    window = SlowWindow()
+    agent = make_agent({WINDOW: window}, online=True)
+    cmd = command("window-1", "OPEN")
+    del cmd["commandId"]
+
+    agent._handle_command(cmd)
+
+    assert window.calls == []
+    assert agent.mqtt.acks() == []

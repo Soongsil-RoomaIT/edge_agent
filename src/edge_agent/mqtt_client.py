@@ -1,13 +1,15 @@
 """MQTT 클라이언트 래퍼 (paho-mqtt 2.x).
 
-토픽 구조 (백엔드와 합의 필요):
-    {prefix}/{device_id}/telemetry  엣지 -> 클라우드  센서 측정값
-    {prefix}/{device_id}/events     엣지 -> 클라우드  모드 전환, 자동제어 실행 등
-    {prefix}/{device_id}/status     엣지 -> 클라우드  "online"/"offline" (retained, LWT)
-    {prefix}/{device_id}/state      엣지 -> 클라우드  기기 상태 (retained, 바뀔 때만)
-    {prefix}/{device_id}/ack        엣지 -> 클라우드  원격 조작 명령 처리 결과
-    {prefix}/{device_id}/command    클라우드 -> 엣지  액추에이터 원격 조작
-    {prefix}/{device_id}/config     클라우드 -> 엣지  자동제어 기준값 (retained 권장)
+토픽 구조 (roomait-v1, cloud-server docs/MQTT.md). base = {prefix}/{device_id}
+    {base}/sensors        엣지 -> 클라우드  센서 측정값
+    {base}/devices        엣지 -> 클라우드  기기 상태 (기기마다, 바뀔 때 + 연결 시)
+    {base}/status         엣지 -> 클라우드  {online, offlineMode} heartbeat. LWT 는 retained
+    {base}/recovery       엣지 -> 클라우드  복구 시 오프라인 동안 실제 완료한 동작
+    {base}/ack            엣지 -> 클라우드  원격 명령 완료/실패
+    {base}/events         엣지 -> 클라우드  진단용 이벤트 (센서 오류, 문 열림 등)
+    {base}/commands       클라우드 -> 엣지  원격 명령
+    {base}/config         클라우드 -> 엣지  오프라인 자동제어 기준값 (retained 권장)
+    {base}/cloud-status   클라우드 -> 엣지  클라우드 서버 heartbeat (선택, cloud_heartbeat_timeout)
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
 
+from . import protocol
 from .config import MqttConfig
 
 log = logging.getLogger(__name__)
@@ -33,21 +36,27 @@ class EdgeMqttClient:
         on_disconnected: Callable[[], None],
         on_command: Callable[[dict[str, Any]], None],
         on_config: Callable[[dict[str, Any]], None] | None = None,
+        on_cloud_status: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._cfg = cfg
         base = f"{cfg.topic_prefix}/{device_id}"
-        self.topic_telemetry = f"{base}/telemetry"
-        self.topic_events = f"{base}/events"
+        self.topic_sensors = f"{base}/sensors"
+        self.topic_devices = f"{base}/devices"
         self.topic_status = f"{base}/status"
-        self.topic_state = f"{base}/state"
+        self.topic_recovery = f"{base}/recovery"
         self.topic_ack = f"{base}/ack"
-        self.topic_command = f"{base}/command"
+        self.topic_events = f"{base}/events"
+        self.topic_commands = f"{base}/commands"
         self.topic_config = f"{base}/config"
+        self.topic_cloud_status = f"{base}/cloud-status"
 
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
-        self._on_command = on_command
-        self._on_config = on_config
+        self._handlers: dict[str, Callable[[dict[str, Any]], None] | None] = {
+            self.topic_commands: on_command,
+            self.topic_config: on_config,
+            self.topic_cloud_status: on_cloud_status,
+        }
 
         c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"edge-{device_id}")
         if cfg.username:
@@ -55,12 +64,20 @@ class EdgeMqttClient:
         if cfg.tls:
             c.tls_set(tls_version=ssl.PROTOCOL_TLS_CLIENT)
         # 비정상 종료 시 브로커가 대신 offline 을 알려준다.
-        c.will_set(self.topic_status, "offline", qos=1, retain=True)
+        c.will_set(self.topic_status, self._offline_payload(), qos=1, retain=True)
         c.reconnect_delay_set(min_delay=1, max_delay=5)
         c.on_connect = self._handle_connect
         c.on_disconnect = self._handle_disconnect
         c.on_message = self._handle_message
         self._client = c
+
+    @staticmethod
+    def _offline_payload() -> str:
+        return json.dumps(protocol.status(offline_mode=True, online=False))
+
+    @property
+    def connected(self) -> bool:
+        return self._client.is_connected()
 
     def start(self) -> None:
         # connect_async + loop_start: 브로커가 꺼져 있어도 바로 반환하고 백그라운드에서 재시도
@@ -69,7 +86,9 @@ class EdgeMqttClient:
 
     def stop(self) -> None:
         if self._client.is_connected():
-            self._client.publish(self.topic_status, "offline", qos=1, retain=True).wait_for_publish(2)
+            self._client.publish(
+                self.topic_status, self._offline_payload(), qos=1, retain=True
+            ).wait_for_publish(2)
         self._client.disconnect()
         self._client.loop_stop()
 
@@ -91,8 +110,7 @@ class EdgeMqttClient:
             log.warning("MQTT connect failed: %s", reason_code)
             return
         log.info("MQTT connected")
-        client.subscribe([(self.topic_command, 1), (self.topic_config, 1)])
-        client.publish(self.topic_status, "online", qos=1, retain=True)
+        client.subscribe([(topic, 1) for topic, h in self._handlers.items() if h is not None])
         self._on_connected()
 
     def _handle_disconnect(self, client, userdata, flags, reason_code, properties) -> None:
@@ -100,6 +118,9 @@ class EdgeMqttClient:
         self._on_disconnected()
 
     def _handle_message(self, client, userdata, msg) -> None:
+        handler = self._handlers.get(msg.topic)
+        if handler is None:
+            return
         try:
             payload = json.loads(msg.payload)
         except (ValueError, UnicodeDecodeError):
@@ -108,8 +129,7 @@ class EdgeMqttClient:
         if not isinstance(payload, dict):
             log.warning("payload on %s is not an object: %r", msg.topic, payload)
             return
-        if msg.topic == self.topic_config:
-            if self._on_config is not None:
-                self._on_config(payload)
-        else:
-            self._on_command(payload)
+        try:
+            handler(payload)
+        except Exception:  # 콜백 예외로 네트워크 스레드가 죽지 않게
+            log.exception("handler for %s failed", msg.topic)
