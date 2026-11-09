@@ -98,6 +98,60 @@ def test_auto_control_does_not_resend_while_moving():
     assert window.calls == 1
 
 
+def test_recovery_report_is_resent_identically():
+    agent = make_agent({WINDOW: MockActuator(WINDOW)}, sensor=StuffySensor(), online=True)
+    go_offline(agent)
+    agent._sample()
+    agent._check_pending()
+    agent._on_broker_connected()
+    agent._check_mode()
+
+    agent._resend_recovery()  # 아직 시간이 안 됨
+    assert len(agent.mqtt.on(agent.mqtt.topic_recovery)) == 1
+
+    for i, (due, payload, ids) in enumerate(agent._recovery_resends):
+        agent._recovery_resends[i] = (0, payload, ids)
+    agent._resend_recovery()
+    agent._resend_recovery()
+    agent._resend_recovery()  # 정해진 횟수(2번)만
+
+    reports = agent.mqtt.on(agent.mqtt.topic_recovery)
+    assert len(reports) == 3
+    assert reports[0] == reports[1] == reports[2]  # 클라우드가 같은 리포트로 알아보고 한 번만 처리
+
+
+def test_first_send_failure_is_covered_by_resend():
+    agent = make_agent({WINDOW: MockActuator(WINDOW)}, sensor=StuffySensor(), online=True)
+    go_offline(agent)
+    agent._sample()
+    agent._check_pending()
+    agent.mqtt.connected = False  # 복구 직후 첫 전송 실패
+    agent._on_broker_connected()
+    agent._check_mode()
+    assert agent.mqtt.on(agent.mqtt.topic_recovery) == []
+
+    agent.mqtt.connected = True
+    due, payload, ids = agent._recovery_resends[0]
+    agent._recovery_resends[0] = (0, payload, ids)
+    agent._resend_recovery()
+
+    (report,) = agent.mqtt.on(agent.mqtt.topic_recovery)
+    assert len(report["localActions"]) == 1
+    assert agent.store.unreported_local_actions(0, 2e9) == []
+
+
+def test_going_offline_again_cancels_resends():
+    agent = make_agent({}, online=True)
+    go_offline(agent)
+    agent._on_broker_connected()
+    agent._check_mode()
+    assert agent._recovery_resends
+
+    go_offline(agent)
+
+    assert agent._recovery_resends == []
+
+
 # --- 클라우드 heartbeat ------------------------------------------------------
 
 
