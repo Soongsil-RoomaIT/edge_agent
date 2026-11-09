@@ -1,6 +1,32 @@
 # 라즈베리파이 테스트 순서
 
-파이를 켰을 때 위에서부터 따라 한다. 결과는 맨 아래 표에 적는다.
+## 자동 (추천)
+
+아래 1~4 를 명령 하나로 실행하고 결과표(`selftest-result.md`)를 만든다. Mock 장치와 임시 DB 로 돌아서 실제 기기는 움직이지 않는다.
+
+```bash
+git clone https://github.com/Soongsil-RoomaIT/edge_agent.git   # 이미 있으면: cd edge_agent && git pull
+cd edge_agent
+bash scripts/pi-selftest.sh                       # 준비 + pytest + v1 형식 + 원격 명령 + 끊김/복구 (약 1분)
+```
+
+Wi-Fi 끊김까지 하려면 노트북에 브로커를 띄우고([2번](#2-wi-fi-끊김-테스트-브로커--노트북) 노트북 부분) 노트북 IP 를 넘긴다.
+네트워크를 30초 끊어서 SSH 도 끊기므로 `nohup` 으로 실행하고 다시 접속해서 결과를 본다.
+
+```bash
+nohup bash scripts/pi-selftest.sh --wifi 192.168.0.10 --install-service > selftest.out 2>&1 &
+# 1~2분 뒤 다시 접속
+cat selftest-result.md
+```
+
+- `--install-service`: 모든 테스트가 통과하면 systemd 자동 실행까지 등록 (실제 하드웨어 venv 는 `--install-service ../hardware/.venv`)
+- 실패하면 해당 줄 아래에 에이전트 로그 마지막 5줄이 나온다. 전체 로그는 `selftest-agent.log`
+
+노트북 Docker(Debian bookworm)에서 확인한 결과 (2026-11-09): 전부 통과, 브로커 정지 → 오프라인 2.5초, 네트워크 끊김 → 오프라인 6.6초.
+
+## 수동
+
+자동 스크립트가 하는 일을 하나씩 해 볼 때. 결과는 맨 아래 표에 적는다.
 
 ## 0. 준비
 

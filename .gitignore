@@ -12,3 +12,8 @@ data/
 
 .idea/
 .vscode/
+
+# 파이 셀프 테스트 결과
+selftest-result.md
+selftest-agent.log
+selftest.out

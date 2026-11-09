@@ -242,7 +242,12 @@ pytest
 
 ### 동작 테스트 (라즈베리파이)
 
-순서와 명령어는 [docs/pi-test.md](docs/pi-test.md) (v1 형식 확인, Wi-Fi 끊김, 자동 실행 등록).
+```bash
+bash scripts/pi-selftest.sh                          # 전체 자동 테스트, 결과는 selftest-result.md
+bash scripts/pi-selftest.sh --wifi <노트북 IP>         # + Wi-Fi 끊김
+```
+
+자세한 순서와 수동 방법은 [docs/pi-test.md](docs/pi-test.md).
 
 이전 결과 (roomait-v1 전 형식)
 
