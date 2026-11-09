@@ -18,12 +18,13 @@ src/edge_agent/
 ├── storage.py       # SQLite (미전송 데이터, 받은 명령, 오프라인 동작 기록, 설정)
 ├── protocol.py      # 클라우드 메시지 계약 (roomait-v1): 기기 id, 시각, 명령 검증
 ├── mqtt_client.py   # MQTT 클라이언트 (paho-mqtt)
-├── devices.py       # 센서/액추에이터 인터페이스 + Mock
+├── devices.py       # 센서/액추에이터 인터페이스 + Mock (실제 드라이버는 hardware 레포)
 └── config.py        # 설정 로딩
 ```
 
-실제 센서/액추에이터 드라이버는 [`hardware`](https://github.com/Soongsil-RoomaIT/hardware) 레포에서 구현하고,
-`devices.py` 의 `SensorReader` / `Actuator` 인터페이스에 맞춰 연결한다. 그 전까지는 Mock 으로 동작한다.
+실제 센서/액추에이터 드라이버는 [`hardware`](https://github.com/Soongsil-RoomaIT/hardware) 레포(`roomcare_hw`)에 있고,
+`use_mock_devices = false` 면 그 `HardwareBundle` 로 연결한다 ([실제 하드웨어로 실행](#실제-하드웨어로-실행)).
+기본값은 Mock 이라 노트북에서도 그대로 돌아간다.
 
 ## MQTT 계약 (roomait-v1)
 
@@ -176,6 +177,43 @@ python -m edge_agent
 ```bash
 sudo apt install -y mosquitto mosquitto-clients
 ```
+
+## 실제 하드웨어로 실행
+
+라즈베리파이에 `edge_agent` 와 `hardware` 를 형제 폴더로 두고 같은 venv 에 둘 다 설치한다.
+venv 만드는 방법(`--system-site-packages`, lgpio)은 hardware README 를 따른다.
+
+```bash
+cd hardware && source .venv/bin/activate
+pip install -e '.[hardware]'
+pip install -e ../edge_agent
+cd ../edge_agent
+```
+
+`config/config.toml`
+
+```toml
+use_mock_devices = false
+
+[hardware]
+temperature_model = "SHT31"
+window_motor = true            # 배선·기구 확인한 것만 true
+purifier = true
+purifier_initial = "off"       # 실제 전원을 눈으로 보고 on / off
+door_sensor = true
+door_verified = true
+door_closer = true
+```
+
+```bash
+python -m edge_agent
+```
+
+- 액추에이터는 기본으로 모두 꺼져 있다. 켜지 않은 기기는 원격 명령에 `FAILED` (`... is not connected`) 로 답한다.
+- `purifier_initial` / `dehumidifier_initial` 이 `unknown` 이면 버튼 서보를 누르지 않는다 (상태를 모르고 누르면 반대로 될 수 있음).
+- 문 10분 자동 닫기는 클라우드 정책이다. hardware 의 `DoorAutoCloser` 는 같이 켜지 않는다.
+- 종료(Ctrl+C, `systemctl stop`) 시 GPIO 와 센서 수집 스레드를 정리한다.
+- hardware 의 `examples/edge_agent_hardware.py` 도 같은 일을 하지만, 이 방법은 설정 파일 하나로 끝난다.
 
 ## 테스트
 

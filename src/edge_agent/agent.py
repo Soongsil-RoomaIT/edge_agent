@@ -21,7 +21,7 @@ import logging
 import threading
 import time
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Callable
 
 from . import auto_control, protocol
 from .config import AgentConfig, Thresholds, apply_threshold_update
@@ -87,6 +87,7 @@ class EdgeAgent:
         self._broker_up = False
         self._cloud_seen: float | None = None  # 마지막 클라우드 heartbeat (monotonic)
         self._config_version: int | None = None
+        self._cleanups: list[Callable[[], None]] = []  # 종료 시 정리 (hardware GPIO 해제 등)
         self._load_saved_thresholds()
 
         # paho 는 실제 라즈베리파이/개발 PC 에서만 필요하므로 여기서 import
@@ -131,11 +132,24 @@ class EdgeAgent:
                 self._stop.wait(TICK)
         finally:
             self.mqtt.stop()
+            self._run_cleanups()
             self.store.close()
             log.info("edge agent stopped")
 
     def stop(self) -> None:
         self._stop.set()
+
+    def add_cleanup(self, fn: Callable[[], None]) -> None:
+        """종료 시 실행할 정리 함수 등록 (나중에 등록한 것부터 실행)."""
+        self._cleanups.append(fn)
+
+    def _run_cleanups(self) -> None:
+        while self._cleanups:
+            fn = self._cleanups.pop()
+            try:
+                fn()
+            except Exception:
+                log.exception("cleanup failed")
 
     # --- connectivity ---------------------------------------------------
 
@@ -585,7 +599,6 @@ class EdgeAgent:
 
 def build_agent(cfg: AgentConfig) -> EdgeAgent:
     if cfg.use_mock_devices:
-        sensor: SensorReader = MockSensorReader()
         door = MockDoorSensor()
         actuators: dict[str, Actuator] = {
             WINDOW: MockActuator(WINDOW),
@@ -593,11 +606,44 @@ def build_agent(cfg: AgentConfig) -> EdgeAgent:
             DEHUMIDIFIER: MockActuator(DEHUMIDIFIER),
             DOOR: MockDoorCloser(door),
         }
-    else:
-        # TODO: hardware 레포의 실제 드라이버 연결
-        #   RoomSensorReader, WindowActuator, ServoButtonPurifier,
-        #   TouchDoorSensor + DoorCloserServo (DoorAutoCloser 는 쓰지 않음: 클라우드가 담당)
-        #   ServoButtonDehumidifier (bundle 의 dehumidifier=True, 없으면 습도는 창문 환기로 처리)
-        raise NotImplementedError("real hardware drivers are not wired yet")
+        return EdgeAgent(
+            cfg, MockSensorReader(), actuators, LocalStore(cfg.db_path), door_sensor=door
+        )
+    return _build_hardware_agent(cfg)
 
-    return EdgeAgent(cfg, sensor, actuators, LocalStore(cfg.db_path), door_sensor=door)
+
+def _build_hardware_agent(cfg: AgentConfig) -> EdgeAgent:
+    """hardware 레포의 HardwareBundle 로 실제 센서/액추에이터를 연결한다.
+
+    - 센서는 CachedSensorReader 라서 read() 가 UART/I2C 를 기다리지 않는다 (0.5초 tick 유지).
+    - 액추에이터는 [hardware] 설정에서 켠 것만 만든다. 생성만으로는 움직이지 않는다.
+    - 문 10분 자동 닫기는 클라우드 정책이라 hardware DoorAutoCloser 는 쓰지 않는다.
+    - 종료 시 GPIO/버스 자원은 bundle.close() 로 한 번에 해제한다.
+    """
+    kwargs = cfg.hardware.bundle_kwargs()  # 잘못된 설정은 GPIO 를 건드리기 전에 거부
+    try:
+        from roomcare_hw.bundle import HardwareBundle
+    except ImportError as e:
+        raise RuntimeError(
+            "use_mock_devices = false needs the hardware package: "
+            "pip install -e ../hardware  (see hardware/docs/edge_integration.md)"
+        ) from e
+
+    hw = HardwareBundle(**kwargs)
+    try:
+        store = LocalStore(cfg.db_path)
+        try:
+            agent = EdgeAgent(cfg, hw.sensor, dict(hw.actuators), store, door_sensor=hw.door_sensor)
+        except BaseException:
+            store.close()
+            raise
+    except BaseException:
+        hw.close()
+        raise
+    agent.add_cleanup(hw.close)
+    log.info(
+        "hardware connected: actuators=%s, door_sensor=%s",
+        sorted(hw.actuators) or "none",
+        hw.door_sensor is not None,
+    )
+    return agent
