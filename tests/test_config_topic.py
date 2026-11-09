@@ -80,10 +80,24 @@ def test_same_retained_config_on_reconnect_is_silent():
 def test_applied_config_survives_restart(tmp_path):
     db = tmp_path / "edge.db"
     agent = make_agent(LocalStore(db))
-    agent._handle_config({"version": 3, "thresholds": {"humidityHigh": 60}})
+    agent._handle_config({"version": 3, "thresholds": {"humidityHigh": 65}})
     agent.store.close()
 
     restarted = make_agent(LocalStore(db))
 
-    assert restarted.cfg.thresholds.humidity_high == 60
+    assert restarted.cfg.thresholds.humidity_high == 65
     assert restarted._config_version == 3
+
+
+def test_cloud_setting_names_are_accepted():
+    # cloud-server / 프론트 자동제어 설정 이름을 그대로 보내도 된다
+    t = apply_threshold_update(
+        Thresholds(), {"humidityOn": 65, "humidityOff": 55, "co2Open": 900, "pm25On": 30}
+    )
+
+    assert (t.humidity_high, t.humidity_off, t.co2_high, t.pm25_high) == (65, 55, 900, 30)
+
+
+def test_humidity_off_must_be_below_on():
+    with pytest.raises(ValueError, match="humidityOff"):
+        apply_threshold_update(Thresholds(), {"humidityOff": 75})
