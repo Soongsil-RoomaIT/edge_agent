@@ -24,7 +24,8 @@ class Thresholds:
     co2_high: float = 1000.0  # ppm
     pm25_high: float = 35.0  # ug/m3, 초과 시 환경부 '나쁨'
     pm10_high: float = 80.0  # ug/m3, 초과 시 환경부 '나쁨'
-    humidity_high: float = 70.0  # %
+    humidity_high: float = 70.0  # %, 초과하면 제습기 켜기 (제습기 없으면 환기)
+    humidity_off: float = 60.0  # %, 이하로 내려가야 제습기 끄기 (켜기/끄기 사이는 현재 상태 유지)
     temperature_high: float = 30.0  # C
 
 
@@ -34,7 +35,12 @@ THRESHOLD_KEYS = {
     "pm25High": "pm25_high",
     "pm10High": "pm10_high",
     "humidityHigh": "humidity_high",
+    "humidityOff": "humidity_off",
     "temperatureHigh": "temperature_high",
+    # cloud-server / 프론트 자동제어 설정 이름 (settings) 도 그대로 받는다
+    "co2Open": "co2_high",
+    "pm25On": "pm25_high",
+    "humidityOn": "humidity_high",
 }
 
 # 원격으로 바꿀 수 있는 기준값의 안전 범위. 잘못된 값(예: CO2 5000)으로
@@ -44,6 +50,7 @@ SAFE_RANGES = {
     "pm25_high": (15.0, 75.0),
     "pm10_high": (30.0, 150.0),
     "humidity_high": (40.0, 85.0),
+    "humidity_off": (30.0, 80.0),
     "temperature_high": (24.0, 35.0),
 }
 
@@ -66,7 +73,12 @@ def apply_threshold_update(current: Thresholds, update: object) -> Thresholds:
         if not low <= value <= high:
             raise ValueError(f"{key}={value} outside safe range {low:g}..{high:g}")
         changes[name] = float(value)
-    return replace(current, **changes)
+    result = replace(current, **changes)
+    if result.humidity_off >= result.humidity_high:
+        raise ValueError(
+            f"humidityOff ({result.humidity_off:g}) must be below humidityHigh ({result.humidity_high:g})"
+        )
+    return result
 
 
 @dataclass
