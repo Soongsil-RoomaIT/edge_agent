@@ -70,6 +70,46 @@ def apply_threshold_update(current: Thresholds, update: object) -> Thresholds:
 
 
 @dataclass
+class HardwareConfig:
+    """use_mock_devices = false 일 때 hardware 레포 HardwareBundle 에 넘기는 값.
+
+    액추에이터는 기본으로 모두 꺼져 있다. 배선과 기구 동작을 직접 확인한 것만 켠다.
+    """
+
+    temperature_model: str = "SHT31"  # SHT31 | DHT11 | DHT22
+    window_motor: bool = False
+    purifier: bool = False
+    # 버튼 서보 가전은 상태를 모르면 누르지 않는다. 실제 전원을 보고 "on" / "off" 로 적는다.
+    purifier_initial: str = "unknown"  # on | off | unknown
+    dehumidifier: bool = False
+    dehumidifier_initial: str = "unknown"
+    door_sensor: bool = False
+    door_verified: bool = False  # 터치센서 설치 확인 완료
+    door_closer: bool = False  # door_sensor + door_verified 필요
+
+    def bundle_kwargs(self) -> dict:
+        def initial(name: str, value: str) -> bool | None:
+            mapping = {"on": True, "off": False, "unknown": None}
+            if value not in mapping:
+                raise ValueError(f"hardware.{name} must be on, off or unknown (got {value!r})")
+            return mapping[value]
+
+        if self.temperature_model not in ("SHT31", "DHT11", "DHT22"):
+            raise ValueError(f"hardware.temperature_model: {self.temperature_model!r}")
+        return {
+            "temperature_model": self.temperature_model,
+            "window_motor": self.window_motor,
+            "purifier": self.purifier,
+            "purifier_initial": initial("purifier_initial", self.purifier_initial),
+            "dehumidifier": self.dehumidifier,
+            "dehumidifier_initial": initial("dehumidifier_initial", self.dehumidifier_initial),
+            "door_sensor": self.door_sensor,
+            "door_verified": self.door_verified,
+            "door_closer": self.door_closer,
+        }
+
+
+@dataclass
 class AgentConfig:
     device_id: str = "room-001"
     sample_interval: float = 2.0  # 센서 측정 주기(초). NFR: 5초 이내 전달
@@ -87,6 +127,7 @@ class AgentConfig:
     use_mock_devices: bool = True
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     thresholds: Thresholds = field(default_factory=Thresholds)
+    hardware: HardwareConfig = field(default_factory=HardwareConfig)
 
 
 def load_config(path: str | Path = "config/config.toml") -> AgentConfig:
@@ -99,4 +140,5 @@ def load_config(path: str | Path = "config/config.toml") -> AgentConfig:
 
     mqtt = MqttConfig(**raw.pop("mqtt", {}))
     thresholds = Thresholds(**raw.pop("thresholds", {}))
-    return AgentConfig(**raw, mqtt=mqtt, thresholds=thresholds)
+    hardware = HardwareConfig(**raw.pop("hardware", {}))
+    return AgentConfig(**raw, mqtt=mqtt, thresholds=thresholds, hardware=hardware)
