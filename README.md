@@ -91,6 +91,7 @@ src/edge_agent/
 - `localActions` 에는 오프라인 자동제어로 **실제 완료를 확인한 동작만** 넣는다. 명령만 보내고 도달하지 못한 동작은 빠진다.
 - 한 번 보낸 동작은 다음 복구 때 다시 보내지 않는다.
 - 부팅 후 처음 연결될 때는 보내지 않는다 (그 전에 온라인이었던 적이 없음).
+- 같은 리포트를 5초, 15초 뒤 한 번씩 다시 보낸다. 엣지가 클라우드보다 먼저 재연결되면 클라우드가 구독하기 전에 보낸 리포트를 놓치기 때문이다. 클라우드는 `offlineSince`/`recoveredAt` 이 같은 리포트를 한 번만 처리한다.
 
 ### status heartbeat 와 클라우드 heartbeat
 
@@ -221,6 +222,16 @@ python -m edge_agent
 - 종료(Ctrl+C, `systemctl stop`) 시 GPIO 와 센서 수집 스레드를 정리한다.
 - hardware 의 `examples/edge_agent_hardware.py` 도 같은 일을 하지만, 이 방법은 설정 파일 하나로 끝난다.
 
+## 라즈베리파이 자동 실행
+
+```bash
+bash deploy/install-service.sh                       # edge_agent/.venv (Mock)
+bash deploy/install-service.sh ../hardware/.venv     # 실제 하드웨어
+journalctl -u edge-agent -f                          # 로그
+```
+
+부팅하면 자동으로 켜지고, 죽으면 3초 뒤 다시 켜진다. 인터넷 없이 부팅해도 시작한다 (오프라인 자동제어).
+
 ## 테스트
 
 ### 단위 테스트
@@ -231,17 +242,9 @@ pytest
 
 ### 동작 테스트 (라즈베리파이)
 
-클라우드 역할은 `mosquitto_sub` / `mosquitto_pub` 로 대신한다.
+순서와 명령어는 [docs/pi-test.md](docs/pi-test.md) (v1 형식 확인, Wi-Fi 끊김, 자동 실행 등록).
 
-```bash
-mosquitto_sub -v -t 'roomcare/#'                                                      # 전송 데이터 보기
-# 원격 조작 (expiresAt 은 지금보다 뒤의 UTC 시각으로)
-EXP=$(date -u -d '+30 sec' +%Y-%m-%dT%H:%M:%SZ)
-mosquitto_pub -t roomcare/room-001/commands -m "{\"commandId\":\"$(cat /proc/sys/kernel/random/uuid)\",\"deviceId\":\"window-1\",\"action\":\"OPEN\",\"reason\":\"test\",\"issuedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"expiresAt\":\"$EXP\"}"
-mosquitto_pub -r -t roomcare/room-001/config -m '{"version":1,"thresholds":{"co2High":900}}'     # 기준값 변경
-sudo systemctl stop mosquitto    # 통신 단절
-sudo systemctl start mosquitto   # 통신 복구
-```
+이전 결과 (roomait-v1 전 형식)
 
 | 테스트 | 방법 | 결과 |
 |---|---|---|

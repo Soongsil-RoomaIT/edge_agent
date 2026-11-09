@@ -45,6 +45,9 @@ log = logging.getLogger(__name__)
 
 TICK = 0.5  # 연결 상태 확인 주기(초)
 AUTO_ACTION_TIMEOUT = 30.0  # 자동제어 동작이 목표에 도달하기를 기다리는 시간(초). 창문 모터 15초 + 여유
+# 복구 리포트를 다시 보내는 시점(초). 엣지가 클라우드보다 먼저 재연결되면 클라우드가 구독하기 전에
+# 보낸 리포트를 놓친다. 클라우드는 offlineSince/recoveredAt 이 같은 리포트를 한 번만 처리한다.
+RECOVERY_RESEND_DELAYS = (5.0, 15.0)
 
 
 @dataclass
@@ -87,6 +90,7 @@ class EdgeAgent:
         self._broker_up = False
         self._cloud_seen: float | None = None  # 마지막 클라우드 heartbeat (monotonic)
         self._config_version: int | None = None
+        self._recovery_resends: list[tuple[float, dict[str, Any], list[int]]] = []  # (due, payload, ids)
         self._cleanups: list[Callable[[], None]] = []  # 종료 시 정리 (hardware GPIO 해제 등)
         self._load_saved_thresholds()
 
@@ -120,6 +124,7 @@ class EdgeAgent:
                 self._check_pending()
                 self._publish_devices()
                 self._publish_status()
+                self._resend_recovery()
 
                 now = time.monotonic()
                 if now >= next_sample:
@@ -192,6 +197,7 @@ class EdgeAgent:
     def _check_mode(self) -> None:
         changed = self.monitor.update()
         if changed is Mode.OFFLINE:
+            self._recovery_resends.clear()  # 지난 복구 리포트는 더 보내지 않음
             self._offline_since = time.time()
             log.warning("cloud unreachable -> OFFLINE auto-control mode")
             self.store.log_event("mode_changed", mode="offline")
@@ -225,9 +231,24 @@ class EdgeAgent:
                 if r["actuator"] in protocol.DEVICE_IDS
             ],
         }
+        ids = [r["id"] for r in rows]
         if self.mqtt.publish_json(self.mqtt.topic_recovery, payload):
-            self.store.mark_local_actions_reported([r["id"] for r in rows])
+            self.store.mark_local_actions_reported(ids)
             log.info("recovery report sent (%d local actions)", len(payload["localActions"]))
+        now = time.monotonic()
+        self._recovery_resends = [(now + d, payload, ids) for d in RECOVERY_RESEND_DELAYS]
+
+    def _resend_recovery(self) -> None:
+        """같은 복구 리포트를 다시 보낸다 (클라우드가 처음 것을 놓쳤을 때 대비)."""
+        if not self._recovery_resends or self.monitor.mode is not Mode.ONLINE:
+            return
+        due, payload, ids = self._recovery_resends[0]
+        if time.monotonic() < due:
+            return
+        self._recovery_resends.pop(0)
+        if self.mqtt.publish_json(self.mqtt.topic_recovery, payload):
+            self.store.mark_local_actions_reported(ids)
+            log.debug("recovery report re-sent")
 
     def _publish_status(self) -> None:
         """status heartbeat. 브로커에 붙어 있으면 오프라인 모드여도 보낸다 (offlineMode=true)."""
