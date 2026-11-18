@@ -1,7 +1,5 @@
 """클라우드로 나가는 MQTT 메시지 형식 (cloud-server roomait-v1 계약)."""
 
-from datetime import datetime
-
 from conftest import make_agent
 
 from edge_agent import protocol
@@ -17,7 +15,7 @@ def test_sensors_payload_matches_contract():
     (payload,) = agent.mqtt.on(agent.mqtt.topic_sensors)
     assert set(payload) == {"measuredAt", "temperature", "humidity", "co2", "pm25", "pm10"}
     assert payload["measuredAt"].endswith("Z")
-    datetime.fromisoformat(payload["measuredAt"])
+    protocol.parse_iso(payload["measuredAt"])
     assert payload["pm10"] >= payload["pm25"]
 
 
@@ -62,3 +60,18 @@ def test_device_state_names():
     assert protocol.device_state("air_purifier", True) == "ON"
     assert protocol.device_state("dehumidifier", False) == "OFF"
     assert protocol.device_state("window", None) is None
+
+
+def test_parse_iso_accepts_cloud_formats():
+    """파이 Python 3.9 의 fromisoformat 은 Z 와 3/6 자리 외 소수를 못 읽는다."""
+    expected = 1762300000.0  # 2025-11-04T23:46:40Z
+    for value in (
+        "2025-11-04T23:46:40Z",
+        "2025-11-04T23:46:40.000Z",
+        "2025-11-04T23:46:40.0Z",
+        "2025-11-04T23:46:40.000000Z",
+        "2025-11-04T23:46:40.0000000Z",
+        "2025-11-04T23:46:40+00:00",
+        "2025-11-05T08:46:40.00+09:00",
+    ):
+        assert protocol.parse_iso(value) == expected, value

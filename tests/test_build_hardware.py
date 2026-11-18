@@ -3,6 +3,8 @@
 노트북에는 GPIO 가 없으므로 roomcare_hw.bundle 을 가짜 모듈로 바꿔서 확인한다.
 """
 
+from __future__ import annotations
+
 import sys
 import types
 

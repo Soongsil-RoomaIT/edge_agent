@@ -10,6 +10,7 @@ cloud-server 레포 docs/MQTT.md 의 "완료 ACK를 지원하는 확장 계약" 
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,12 +45,26 @@ def iso(ts: float | None = None) -> str:
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+_FRACTION = re.compile(r"\.(\d+)(?=[+-]\d\d:\d\d$|$)")
+
+
+def _normalize_iso(value: str) -> str:
+    """Python 3.9~3.10 fromisoformat 이 못 읽는 형식을 맞춘다.
+
+    끝의 Z -> +00:00, 소수점 아래 자릿수 -> 6자리 (3.9 는 3자리/6자리만 받음).
+    """
+    value = value.strip()
+    if value[-1:] in ("Z", "z"):
+        value = value[:-1] + "+00:00"
+    return _FRACTION.sub(lambda m: "." + m.group(1)[:6].ljust(6, "0"), value, count=1)
+
+
 def parse_iso(value: Any) -> float:
     """ISO 문자열 -> Unix 시각(초). 시간대가 없으면 거부한다 (파이 시간대와 헷갈리지 않게)."""
     if not isinstance(value, str):
         raise ValueError("timestamp must be an ISO 8601 string")
     try:
-        dt = datetime.fromisoformat(value)
+        dt = datetime.fromisoformat(_normalize_iso(value))
     except ValueError as e:
         raise ValueError(f"invalid timestamp: {value}") from e
     if dt.tzinfo is None:
