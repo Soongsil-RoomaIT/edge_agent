@@ -1,5 +1,7 @@
 """클라우드 config 토픽으로 자동제어 기준값 변경."""
 
+from __future__ import annotations
+
 import pytest
 
 from edge_agent.agent import EdgeAgent

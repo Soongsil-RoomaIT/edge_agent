@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.9~3.10 (Raspberry Pi OS bullseye)
+    import tomli as tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
