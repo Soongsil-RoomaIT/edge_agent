@@ -144,6 +144,10 @@ if ! command -v mosquitto >/dev/null || ! command -v mosquitto_sub >/dev/null; t
 fi
 [ -x .venv/bin/python ] || python3 -m venv .venv || { echo "venv 생성 실패 (sudo apt install python3-venv)"; exit 1; }
 PY="$REPO/.venv/bin/python"
+"$PY" -c 'import sys; sys.exit(sys.version_info < (3, 11))' \
+  || { echo "Python 3.11 이상이 필요함 (지금: $("$PY" -V 2>&1)). Raspberry Pi OS bookworm 이상을 쓰거나 .venv 를 지우고 python3.11 로 다시 만들기"; exit 1; }
+# 오래된 pip(21.3 미만)는 pyproject.toml 만 있는 패키지를 -e 로 설치하지 못한다
+"$PY" -m pip install -q --upgrade pip || { echo "pip 업그레이드 실패"; exit 1; }
 "$PY" -m pip install -q -e ".[dev]" || { echo "pip install 실패"; exit 1; }
 [ -f config/config.toml ] || cp config/config.example.toml config/config.toml
 if command -v timedatectl >/dev/null; then
