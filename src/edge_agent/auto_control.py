@@ -44,6 +44,16 @@ class Decision:
     reason: str
 
 
+def _above(value: float | None, limit: float) -> bool:
+    """값이 있고 기준보다 크다. 없는 센서(None)는 켜는 이유가 되지 않는다."""
+    return value is not None and value > limit
+
+
+def _at_most(value: float | None, limit: float) -> bool:
+    """값이 없거나 기준 이하. 없는 센서(None)는 끄기를 막지 않는다."""
+    return value is None or value <= limit
+
+
 def decide(
     reading: Reading, t: Thresholds, available: Collection[str] | None = None
 ) -> list[Decision]:
@@ -63,11 +73,14 @@ def decide(
         )
         if value is not None and value > limit
     ]
-    dust_clear = reading.pm25 <= t.pm25_high * DUST_OFF_RATIO and (
-        pm10 is None or pm10 <= t.pm10_high * DUST_OFF_RATIO
+    # 미세먼지 센서가 없으면(둘 다 None) 근거 없이 공기청정기를 끄지 않는다
+    dust_clear = (
+        (reading.pm25 is not None or pm10 is not None)
+        and _at_most(reading.pm25, t.pm25_high * DUST_OFF_RATIO)
+        and _at_most(pm10, t.pm10_high * DUST_OFF_RATIO)
     )
-    humid = reading.humidity > t.humidity_high
-    dry = reading.humidity <= t.humidity_off
+    humid = _above(reading.humidity, t.humidity_high)
+    dry = reading.humidity is not None and reading.humidity <= t.humidity_off
 
     decisions: list[Decision] = []
 
@@ -80,16 +93,19 @@ def decide(
         ventilate = [
             name
             for name, flag in (
-                ("co2", reading.co2 > t.co2_high),
+                ("co2", _above(reading.co2, t.co2_high)),
                 ("humidity", humid and not has_dehumidifier),
-                ("temperature", reading.temperature > t.temperature_high),
+                ("temperature", _above(reading.temperature, t.temperature_high)),
             )
             if flag
         ]
+        # 없는 센서(None)는 닫기를 막지 않는다. 다만 온도·습도·CO2 를 하나도 모르면 판단하지 않는다.
+        known = any(v is not None for v in (reading.co2, reading.temperature, reading.humidity))
         calm = (
-            reading.co2 <= t.co2_high - CO2_MARGIN
-            and reading.temperature <= t.temperature_high - TEMPERATURE_MARGIN
-            and (has_dehumidifier or dry)
+            known
+            and _at_most(reading.co2, t.co2_high - CO2_MARGIN)
+            and _at_most(reading.temperature, t.temperature_high - TEMPERATURE_MARGIN)
+            and (has_dehumidifier or reading.humidity is None or dry)
         )
         if ventilate:
             decisions.append(Decision(WINDOW, True, "ventilate: " + ", ".join(ventilate)))

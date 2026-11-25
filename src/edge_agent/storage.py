@@ -18,10 +18,10 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS readings (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     measured_at REAL    NOT NULL,
-    temperature REAL    NOT NULL,
-    humidity    REAL    NOT NULL,
-    co2         REAL    NOT NULL,
-    pm25        REAL    NOT NULL,
+    temperature REAL,
+    humidity    REAL,
+    co2         REAL,
+    pm25        REAL,
     synced      INTEGER NOT NULL DEFAULT 0,
     pm10        REAL
 );
@@ -73,10 +73,34 @@ class LocalStore:
 
     def _migrate(self) -> None:
         """이전 버전에서 만든 DB 파일에 새 컬럼 추가. 기존 행은 NULL 로 남는다."""
-        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(readings)")}
-        if "pm10" not in columns:
+        info = {row["name"]: row for row in self._conn.execute("PRAGMA table_info(readings)")}
+        if "pm10" not in info:
             with self._conn:
                 self._conn.execute("ALTER TABLE readings ADD COLUMN pm10 REAL")
+        if info["temperature"]["notnull"]:
+            # 예전 DB 는 측정값이 NOT NULL 이었다. 센서가 일부만 달린 구성(DHT11 만 등)을 저장하려면
+            # 제약을 풀어야 하는데 SQLite 는 ALTER 로 못 바꾸므로 테이블을 다시 만든다.
+            self._conn.executescript(
+                """
+                BEGIN;
+                CREATE TABLE readings_new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    measured_at REAL    NOT NULL,
+                    temperature REAL,
+                    humidity    REAL,
+                    co2         REAL,
+                    pm25        REAL,
+                    synced      INTEGER NOT NULL DEFAULT 0,
+                    pm10        REAL
+                );
+                INSERT INTO readings_new (id, measured_at, temperature, humidity, co2, pm25, synced, pm10)
+                    SELECT id, measured_at, temperature, humidity, co2, pm25, synced, pm10 FROM readings;
+                DROP TABLE readings;
+                ALTER TABLE readings_new RENAME TO readings;
+                CREATE INDEX IF NOT EXISTS idx_readings_synced ON readings (synced, id);
+                COMMIT;
+                """
+            )
 
     def close(self) -> None:
         self._conn.close()
