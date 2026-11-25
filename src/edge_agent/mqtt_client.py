@@ -62,7 +62,8 @@ class EdgeMqttClient:
         if cfg.username:
             c.username_pw_set(cfg.username, cfg.password)
         if cfg.tls:
-            c.tls_set(tls_version=ssl.PROTOCOL_TLS_CLIENT)
+            # ca_file 이 None 이면 시스템 기본 CA. 서버 인증서의 호스트 이름(IP)도 검증한다.
+            c.tls_set(ca_certs=cfg.ca_file, tls_version=ssl.PROTOCOL_TLS_CLIENT)
         # 비정상 종료 시 브로커가 대신 offline 을 알려준다.
         c.will_set(self.topic_status, self._offline_payload(), qos=1, retain=True)
         c.reconnect_delay_set(min_delay=1, max_delay=5)

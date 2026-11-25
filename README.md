@@ -186,6 +186,27 @@ python -m edge_agent
 sudo apt install -y mosquitto mosquitto-clients
 ```
 
+### 배포 서버(Azure VM)에 연결
+
+배포 브로커는 TLS 8883 + 계정 로그인만 받고, 인증서는 자체 서명이다 (backend `docs/NODE_BACKEND.md`).
+D 담당에게 **VM 공인 IP, 엣지 비밀번호(`MQTT_EDGE_PASSWORD`), `ca.crt`** 세 가지를 받는다.
+`ca.key`, `server.key` 는 받지 않는다.
+
+`ca.crt` 를 `config/` 에 두고 `config/config.toml` 의 `[mqtt]` 를 바꾼다.
+
+```toml
+[mqtt]
+host = "<VM 공인 IP>"
+port = 8883
+username = "room-001"          # 계정 이름 = device_id (브로커 ACL 이 roomcare/<계정>/# 만 허용)
+password = "<MQTT_EDGE_PASSWORD>"
+tls = true
+ca_file = "ca.crt"             # config.toml 이 있는 폴더 기준
+```
+
+`ca_file` 이 없으면 서버 인증서를 믿지 못해 접속이 끊긴다 (브로커 로그 `tlsv1 alert unknown ca`).
+인증서는 VM 공인 IP 로 만들어져서, IP 가 바뀌면 D 담당이 인증서를 다시 만들고 `ca.crt` 도 다시 받아야 한다.
+
 ## 실제 하드웨어로 실행
 
 라즈베리파이에 `edge_agent` 와 `hardware` 를 형제 폴더로 두고 같은 venv 에 둘 다 설치한다.

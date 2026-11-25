@@ -14,6 +14,15 @@ port = 1883
 # username = ""
 # password = ""
 tls = false
+# ca_file = "ca.crt"   # 자체 서명 브로커의 CA 인증서. 상대 경로는 이 파일이 있는 config/ 폴더 기준
+
+# 배포 서버(Azure VM)에 붙을 때는 위 값을 이렇게 바꾼다. 비밀번호와 ca.crt 는 D 담당에게 받는다.
+# host = "<VM 공인 IP>"
+# port = 8883
+# username = "room-001"
+# password = "<MQTT_EDGE_PASSWORD>"
+# tls = true
+# ca_file = "ca.crt"
 keepalive = 4
 topic_prefix = "roomcare"
 
