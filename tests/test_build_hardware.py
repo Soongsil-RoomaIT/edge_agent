@@ -71,6 +71,27 @@ def test_bundle_gets_config_values(fake_hw, tmp_path):
     assert agent.door_sensor is None
 
 
+def test_dht_only_uses_starter_profile(fake_hw, tmp_path):
+    build_agent(hw_config(tmp_path, temperature_model="DHT11", dht_only=True))
+
+    (hw,) = fake_hw.instances
+    assert hw.kwargs["starter"] is True
+    assert hw.kwargs["temperature_model"] == "DHT11"
+
+
+def test_full_sensor_set_is_default(fake_hw, tmp_path):
+    build_agent(hw_config(tmp_path))
+
+    assert fake_hw.instances[0].kwargs["starter"] is False
+
+
+def test_dht_only_with_sht31_is_rejected_before_touching_gpio(fake_hw, tmp_path):
+    with pytest.raises(ValueError, match="dht_only"):
+        build_agent(hw_config(tmp_path, dht_only=True))
+
+    assert fake_hw.instances == []
+
+
 def test_actuators_are_off_by_default(fake_hw, tmp_path):
     agent = build_agent(hw_config(tmp_path))
 

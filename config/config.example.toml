@@ -38,6 +38,7 @@ temperature_high = 30.0
 # 액추에이터는 배선과 기구 동작을 직접 확인한 것만 true 로.
 [hardware]
 temperature_model = "SHT31"      # SHT31 | DHT11 | DHT22
+dht_only = false                 # true = DHT 온습도만 (CO2·미세먼지 센서 없음). temperature_model 을 DHT11/DHT22 로
 window_motor = false
 purifier = false
 purifier_initial = "unknown"     # 실제 전원을 보고 on / off. unknown 이면 버튼을 누르지 않음
