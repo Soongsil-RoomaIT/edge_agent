@@ -99,6 +99,11 @@ class HardwareConfig:
     # false 면 SCD41(CO2) 과 PMS7003(미세먼지) 도 연결되어 있어야 시작된다.
     dht_only: bool = False
     window_motor: bool = False
+    # 버튼 서보 구성: 서보 하나(GPIO18)가 창문/공기청정기/제습기 버튼을 모두 누르고,
+    # 누르는 동안 기기별 LED 가 켜진다. window_motor 와 같이 쓸 수 없다.
+    button_panel: bool = False
+    window_button: bool = False  # 버튼으로 여닫는 창문 (button_panel 필요)
+    window_initial: str = "unknown"  # open | closed | unknown. unknown 이면 누르지 않음
     purifier: bool = False
     # 버튼 서보 가전은 상태를 모르면 누르지 않는다. 실제 전원을 보고 "on" / "off" 로 적는다.
     purifier_initial: str = "unknown"  # on | off | unknown
@@ -119,7 +124,16 @@ class HardwareConfig:
             raise ValueError(f"hardware.temperature_model: {self.temperature_model!r}")
         if self.dht_only and self.temperature_model == "SHT31":
             raise ValueError("hardware.dht_only = true 는 temperature_model 이 DHT11 / DHT22 여야 함")
-        return {
+        if self.button_panel and self.window_motor:
+            raise ValueError("hardware.button_panel 과 window_motor 는 같이 쓸 수 없음 (GPIO17/27/22 겹침)")
+        if self.window_button and not self.button_panel:
+            raise ValueError("hardware.window_button = true 는 button_panel = true 가 필요함")
+        window_states = {"open": True, "closed": False, "unknown": None}
+        if self.window_initial not in window_states:
+            raise ValueError(
+                f"hardware.window_initial must be open, closed or unknown (got {self.window_initial!r})"
+            )
+        kwargs = {
             "starter": self.dht_only,
             "temperature_model": self.temperature_model,
             "window_motor": self.window_motor,
@@ -131,6 +145,14 @@ class HardwareConfig:
             "door_verified": self.door_verified,
             "door_closer": self.door_closer,
         }
+        if self.button_panel:
+            # 버튼 서보 구성을 모르는 예전 hardware 레포에서도 기존 설정은 그대로 돌게, 켰을 때만 넘긴다
+            kwargs.update(
+                button_panel=True,
+                window_button=self.window_button,
+                window_initial=window_states[self.window_initial],
+            )
+        return kwargs
 
 
 @dataclass
