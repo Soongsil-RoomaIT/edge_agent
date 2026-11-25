@@ -17,6 +17,9 @@ class MqttConfig:
     username: str | None = None
     password: str | None = None
     tls: bool = False
+    # 브로커가 자체 서명 인증서를 쓸 때 그 CA 인증서(ca.crt) 경로. 없으면 시스템 기본 CA 로 검증한다.
+    # 상대 경로는 설정 파일이 있는 폴더 기준.
+    ca_file: str | None = None
     # 브로커 단절 감지 속도에 직접 영향. paho 는 약 1.5 x keepalive 안에 끊김을 감지한다.
     keepalive: int = 4
     topic_prefix: str = "roomcare"
@@ -154,6 +157,15 @@ def load_config(path: str | Path = "config/config.toml") -> AgentConfig:
         raw = tomllib.load(f)
 
     mqtt = MqttConfig(**raw.pop("mqtt", {}))
+    if mqtt.ca_file:
+        if not mqtt.tls:
+            raise ValueError("[mqtt] ca_file 은 tls = true 일 때만 쓸 수 있음")
+        ca = Path(mqtt.ca_file).expanduser()
+        if not ca.is_absolute():
+            ca = path.parent / ca
+        if not ca.is_file():
+            raise FileNotFoundError(f"[mqtt] ca_file 이 없음: {ca}")
+        mqtt.ca_file = str(ca.resolve())
     thresholds = Thresholds(**raw.pop("thresholds", {}))
     hardware = HardwareConfig(**raw.pop("hardware", {}))
     return AgentConfig(**raw, mqtt=mqtt, thresholds=thresholds, hardware=hardware)
