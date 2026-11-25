@@ -3,7 +3,6 @@
 from conftest import make_agent
 
 from edge_agent import protocol
-from edge_agent.devices import Reading
 
 
 def test_sensors_payload_matches_contract():
@@ -17,18 +16,6 @@ def test_sensors_payload_matches_contract():
     assert payload["measuredAt"].endswith("Z")
     protocol.parse_iso(payload["measuredAt"])
     assert payload["pm10"] >= payload["pm25"]
-
-
-def test_reading_without_pm10_is_not_sent_but_not_retried():
-    agent = make_agent()
-    agent.store.save_reading(
-        Reading(measured_at=0.0, temperature=24.0, humidity=50.0, co2=600.0, pm25=10.0)
-    )
-
-    agent._flush_backlog()
-
-    assert agent.mqtt.on(agent.mqtt.topic_sensors) == []
-    assert agent.store.unsynced_readings() == []
 
 
 def test_event_detail_is_json_object_and_time_is_iso():

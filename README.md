@@ -140,10 +140,11 @@ src/edge_agent/
 | `config_applied` | `version`, `thresholds` | 클라우드 기준값 적용 |
 | `config_rejected` | `version`, `error` | 잘못된 기준값이라 거부 |
 
-### PM10
+### 없는 센서 값
 
-클라우드는 5개 측정값이 모두 있어야 받는다. `pm10` 이 없는 측정값(hardware 드라이버가 아직 PM10 을 주지 않음)은
-**보내지 않는다** (없는 값을 만들지 않음). hardware `Reading` 에 `pm10` 이 추가되어야 실제 센서 값이 클라우드에 저장된다.
+달려 있지 않거나 읽지 못한 센서 값은 0 으로 만들지 않고 **`null` 로 보낸다** (cloud-server `bbd284e` 부터 5개 값 모두 `null` 허용).
+예: DHT11 만 달린 구성은 `{"temperature": 24.3, "humidity": 52.1, "co2": null, "pm25": null, "pm10": null}`.
+자동제어도 없는 값은 켜는 이유로 쓰지 않고, 끄기를 막지도 않는다.
 
 ## 오프라인 자동제어 규칙
 

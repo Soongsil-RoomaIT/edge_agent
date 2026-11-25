@@ -81,7 +81,6 @@ class EdgeAgent:
         self._stop = threading.Event()
         self._offline_since: float | None = None
         self._sensor_failures = 0
-        self._pm10_warned = False
         # 자동제어를 건너뛴 액추에이터와 그 사유. 같은 사유는 이벤트를 한 번만 남긴다.
         self._actuator_issues: dict[str, str] = {}
         self._pending: dict[str, PendingAction] = {}  # 액추에이터 이름 -> 진행 중인 동작
@@ -462,13 +461,7 @@ class EdgeAgent:
         """로컬에 쌓인 미전송 측정값/이벤트를 클라우드로 전송."""
         sent: list[int] = []
         for row in self.store.unsynced_readings():
-            if row["pm10"] is None:
-                # 클라우드는 5개 값이 모두 있어야 받는다. 없는 값을 만들어 보내지 않는다.
-                if not self._pm10_warned:
-                    log.warning("reading without pm10 is not sent (sensor driver gives no PM10)")
-                    self._pm10_warned = True
-                sent.append(row["id"])
-                continue
+            # 없는 센서 값은 0 으로 만들지 않고 null 로 보낸다 (cloud-server bbd284e 부터 허용)
             payload = {
                 "measuredAt": protocol.iso(row["measured_at"]),
                 "temperature": row["temperature"],

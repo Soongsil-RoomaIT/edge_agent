@@ -14,11 +14,13 @@ from typing import Protocol
 
 @dataclass(frozen=True)
 class Reading:
+    """센서 측정값. 달려 있지 않거나 읽지 못한 센서는 None (0 으로 만들지 않음)."""
+
     measured_at: float  # unix time
-    temperature: float  # C
-    humidity: float  # %
-    co2: float  # ppm
-    pm25: float  # ug/m3, 초미세먼지
+    temperature: float | None  # C
+    humidity: float | None  # %
+    co2: float | None  # ppm
+    pm25: float | None  # ug/m3, 초미세먼지
     # ug/m3, 미세먼지. hardware 의 Reading 에는 아직 없을 수 있어서 선택 필드로 둔다.
     pm10: float | None = None
 
