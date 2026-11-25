@@ -38,7 +38,11 @@ temperature_high = 30.0
 # 액추에이터는 배선과 기구 동작을 직접 확인한 것만 true 로.
 [hardware]
 temperature_model = "SHT31"      # SHT31 | DHT11 | DHT22
+dht_only = false                 # true = DHT 온습도만 (CO2·미세먼지 센서 없음). temperature_model 을 DHT11/DHT22 로
 window_motor = false
+button_panel = false             # true = 버튼 서보 하나 + LED 로 창문/공기청정기/제습기 (window_motor 와 같이 못 씀)
+window_button = false            # 버튼으로 여닫는 창문 (button_panel 필요)
+window_initial = "unknown"       # 실제 창문을 보고 open / closed. unknown 이면 누르지 않음
 purifier = false
 purifier_initial = "unknown"     # 실제 전원을 보고 on / off. unknown 이면 버튼을 누르지 않음
 dehumidifier = false

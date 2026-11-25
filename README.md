@@ -238,6 +238,22 @@ door_closer = true
 python -m edge_agent
 ```
 
+- 지금 시연 구성(버튼 서보 1개 + LED 3개 + 문 서보, DHT11)은 아래처럼 쓴다. 배선은 hardware README "현재 시연 구성".
+  ```toml
+  [hardware]
+  temperature_model = "DHT11"
+  dht_only = true
+  button_panel = true
+  window_button = true
+  window_initial = "closed"      # 실제 상태를 보고 적는다 (버튼은 누르기만 해서 상태를 모름)
+  purifier = true
+  purifier_initial = "off"
+  dehumidifier = true
+  dehumidifier_initial = "off"
+  ```
+  창문·공기청정기·제습기 명령이 겹치면 서보가 하나라서 하나씩 차례로 누른다 (한 번에 약 1초).
+- CO2(SCD41)·미세먼지(PMS7003) 센서 없이 DHT 온습도만 달았으면 `temperature_model = "DHT11"`, `dht_only = true`.
+  `dht_only = false` 면 두 센서가 없을 때 시작하지 못한다. 없는 값은 `null` 로 보낸다.
 - 액추에이터는 기본으로 모두 꺼져 있다. 켜지 않은 기기는 원격 명령에 `FAILED` (`... is not connected`) 로 답한다.
 - `purifier_initial` / `dehumidifier_initial` 이 `unknown` 이면 버튼 서보를 누르지 않는다 (상태를 모르고 누르면 반대로 될 수 있음).
 - 문 10분 자동 닫기는 클라우드 정책이다. hardware 의 `DoorAutoCloser` 는 같이 켜지 않는다.

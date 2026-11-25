@@ -26,7 +26,7 @@ class FakeBundle:
         self.closed = False
         self.sensor = MockSensorReader(seed=0)
         self.actuators = {}
-        if kwargs["window_motor"]:
+        if kwargs["window_motor"] or kwargs.get("window_button"):
             self.actuators[WINDOW] = MockActuator(WINDOW)
         if kwargs["purifier"]:
             self.actuators[AIR_PURIFIER] = MockActuator(AIR_PURIFIER)
@@ -69,6 +69,69 @@ def test_bundle_gets_config_values(fake_hw, tmp_path):
     assert set(agent.actuators) == {WINDOW, AIR_PURIFIER}
     assert agent.sensor is hw.sensor
     assert agent.door_sensor is None
+
+
+def test_dht_only_uses_starter_profile(fake_hw, tmp_path):
+    build_agent(hw_config(tmp_path, temperature_model="DHT11", dht_only=True))
+
+    (hw,) = fake_hw.instances
+    assert hw.kwargs["starter"] is True
+    assert hw.kwargs["temperature_model"] == "DHT11"
+
+
+def test_full_sensor_set_is_default(fake_hw, tmp_path):
+    build_agent(hw_config(tmp_path))
+
+    assert fake_hw.instances[0].kwargs["starter"] is False
+
+
+def test_dht_only_with_sht31_is_rejected_before_touching_gpio(fake_hw, tmp_path):
+    with pytest.raises(ValueError, match="dht_only"):
+        build_agent(hw_config(tmp_path, dht_only=True))
+
+    assert fake_hw.instances == []
+
+
+def test_button_panel_config_is_passed(fake_hw, tmp_path):
+    cfg = hw_config(
+        tmp_path,
+        button_panel=True,
+        window_button=True,
+        window_initial="closed",
+        purifier=True,
+        purifier_initial="off",
+    )
+
+    agent = build_agent(cfg)
+
+    kw = fake_hw.instances[0].kwargs
+    assert kw["button_panel"] is True
+    assert kw["window_button"] is True
+    assert kw["window_initial"] is False
+    assert kw["window_motor"] is False
+    assert set(agent.actuators) == {WINDOW, AIR_PURIFIER}
+
+
+def test_button_panel_options_not_sent_when_off(fake_hw, tmp_path):
+    # 버튼 서보 구성을 모르는 예전 hardware 레포에 모르는 인자를 넘기지 않는다
+    build_agent(hw_config(tmp_path))
+
+    assert "button_panel" not in fake_hw.instances[0].kwargs
+
+
+@pytest.mark.parametrize(
+    "hardware, message",
+    [
+        (dict(button_panel=True, window_motor=True), "window_motor"),
+        (dict(window_button=True), "button_panel"),
+        (dict(button_panel=True, window_button=True, window_initial="half"), "window_initial"),
+    ],
+)
+def test_bad_button_panel_config_is_rejected_before_touching_gpio(fake_hw, tmp_path, hardware, message):
+    with pytest.raises(ValueError, match=message):
+        build_agent(hw_config(tmp_path, **hardware))
+
+    assert fake_hw.instances == []
 
 
 def test_actuators_are_off_by_default(fake_hw, tmp_path):
