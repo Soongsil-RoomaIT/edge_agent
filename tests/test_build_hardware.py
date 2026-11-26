@@ -9,6 +9,7 @@ import sys
 import types
 
 import pytest
+from conftest import FakeMqtt, go_online
 
 from edge_agent.agent import build_agent
 from edge_agent.config import AgentConfig, HardwareConfig, load_config
@@ -69,6 +70,49 @@ def test_bundle_gets_config_values(fake_hw, tmp_path):
     assert set(agent.actuators) == {WINDOW, AIR_PURIFIER}
     assert agent.sensor is hw.sensor
     assert agent.door_sensor is None
+    assert "door_magnetic" not in hw.kwargs
+
+
+def test_magnetic_door_reports_state_without_closer(fake_hw, tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        'use_mock_devices = false\ndb_path = ":memory:"\n[hardware]\n'
+        "door_sensor = true\ndoor_magnetic = true\ndoor_verified = true\n",
+        encoding="utf-8",
+    )
+    agent = build_agent(load_config(path))
+    (hw,) = fake_hw.instances
+    assert hw.kwargs["door_magnetic"] is True
+    assert hw.kwargs["door_verified"] is True
+    assert hw.kwargs["door_closer"] is False
+    assert agent.door_sensor is hw.door_sensor
+    assert not agent.actuators
+
+    agent.mqtt = FakeMqtt()
+    go_online(agent)
+    try:
+        agent._check_door()
+        agent._check_door()
+        hw.door_sensor.is_open = True
+        agent._check_door()
+        hw.door_sensor.is_open = False
+        agent._check_door()
+
+        updates = agent.mqtt.on(agent.mqtt.topic_devices)
+        assert [(update["id"], update["state"]) for update in updates] == [
+            ("door-1", "CLOSED"),
+            ("door-1", "OPEN"),
+            ("door-1", "CLOSED"),
+        ]
+    finally:
+        agent.store.close()
+
+
+def test_magnetic_door_requires_door_sensor(fake_hw, tmp_path):
+    with pytest.raises(ValueError, match="door_magnetic.*door_sensor"):
+        build_agent(hw_config(tmp_path, door_magnetic=True))
+
+    assert fake_hw.instances == []
 
 
 def test_dht_only_uses_starter_profile(fake_hw, tmp_path):

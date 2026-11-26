@@ -48,5 +48,6 @@ purifier_initial = "unknown"     # 실제 전원을 보고 on / off. unknown 이
 dehumidifier = false
 dehumidifier_initial = "unknown"
 door_sensor = false
+door_magnetic = false             # 자석식 접점 센서(GPIO23). door_sensor = true 필요
 door_verified = false
 door_closer = false              # door_sensor, door_verified 가 true 여야 함
