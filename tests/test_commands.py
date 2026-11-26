@@ -73,6 +73,17 @@ def test_not_reaching_target_before_expiry_fails():
     assert "deadline" in ack["reason"]
 
 
+def test_late_window_confirmation_does_not_ack_success():
+    window = SlowWindow()
+    agent = make_agent({WINDOW: window}, online=True)
+    agent._handle_command(command("window-1", "OPEN"))
+    agent._pending[WINDOW].deadline -= 30
+    window.arrive()
+    agent._check_pending()
+
+    assert agent.mqtt.acks()[0]["status"] == "FAILED"
+
+
 def test_fault_while_moving_fails():
     window = SlowWindow()
     agent = make_agent({WINDOW: window}, online=True)

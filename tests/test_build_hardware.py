@@ -9,11 +9,21 @@ import sys
 import types
 
 import pytest
-from conftest import FakeMqtt, go_online
+from conftest import FakeMqtt, command, go_online
 
 from edge_agent.agent import build_agent
 from edge_agent.config import AgentConfig, HardwareConfig, load_config
 from edge_agent.devices import AIR_PURIFIER, WINDOW, MockActuator, MockDoorSensor, MockSensorReader
+
+
+class SensorWindow(MockActuator):
+    state_source = "SENSOR"
+
+    def set(self, on: bool) -> None:
+        pass  # Pressing the button has no effect on the reading until the sensor changes.
+
+    def update_sensor(self, is_open: bool) -> None:
+        super().set(is_open)
 
 
 class FakeBundle:
@@ -27,7 +37,9 @@ class FakeBundle:
         self.closed = False
         self.sensor = MockSensorReader(seed=0)
         self.actuators = {}
-        if kwargs["window_motor"] or kwargs.get("window_button"):
+        if kwargs.get("window_touch"):
+            self.actuators[WINDOW] = SensorWindow(WINDOW)
+        elif kwargs["window_motor"] or kwargs.get("window_button"):
             self.actuators[WINDOW] = MockActuator(WINDOW)
         if kwargs["purifier"]:
             self.actuators[AIR_PURIFIER] = MockActuator(AIR_PURIFIER)
@@ -71,6 +83,55 @@ def test_bundle_gets_config_values(fake_hw, tmp_path):
     assert agent.sensor is hw.sensor
     assert agent.door_sensor is None
     assert "door_magnetic" not in hw.kwargs
+    assert "window_touch" not in hw.kwargs
+
+
+def test_window_touch_reports_and_acks_observed_state(fake_hw, tmp_path):
+    cfg = hw_config(
+        tmp_path, button_panel=True, window_button=True, window_touch=True, touch_verified=True
+    )
+    cfg.db_path = ":memory:"
+    agent = build_agent(cfg)
+    (hw,) = fake_hw.instances
+    assert hw.kwargs["window_touch"] is True and hw.kwargs["touch_verified"] is True
+    agent.mqtt = FakeMqtt()
+    go_online(agent)
+    try:
+        agent._publish_devices()
+        agent._handle_command(command("window-1", "OPEN"))
+        agent._check_pending()
+        assert agent.mqtt.acks() == []
+
+        agent.actuators[WINDOW].update_sensor(True)
+        agent._check_pending()
+        agent._publish_devices()
+        updates = agent.mqtt.on(agent.mqtt.topic_devices)
+        assert [(p["id"], p["state"], p["stateSource"]) for p in updates] == [
+            ("window-1", "CLOSED", "SENSOR"),
+            ("window-1", "OPEN", "SENSOR"),
+        ]
+        (ack,) = agent.mqtt.acks()
+        assert (ack["status"], ack["stateSource"]) == ("EXECUTED", "SENSOR")
+    finally:
+        agent.store.close()
+
+
+def test_window_touch_requires_installation_verification(fake_hw, tmp_path):
+    with pytest.raises(ValueError, match="window_touch.*touch_verified"):
+        build_agent(hw_config(tmp_path, button_panel=True, window_button=True, window_touch=True))
+
+    assert fake_hw.instances == []
+
+
+def test_window_touch_rejects_old_hardware(fake_hw, tmp_path, monkeypatch):
+    monkeypatch.setattr(SensorWindow, "state_source", None)
+    cfg = hw_config(
+        tmp_path, button_panel=True, window_button=True, window_touch=True, touch_verified=True
+    )
+    with pytest.raises(RuntimeError, match="latest hardware package"):
+        build_agent(cfg)
+
+    assert fake_hw.instances[0].closed
 
 
 def test_magnetic_door_reports_state_without_closer(fake_hw, tmp_path):

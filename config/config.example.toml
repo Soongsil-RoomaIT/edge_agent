@@ -43,6 +43,8 @@ window_motor = false
 button_panel = false             # true = 버튼 서보 하나 + LED 로 창문/공기청정기/제습기 (window_motor 와 같이 못 씀)
 window_button = false            # 버튼으로 여닫는 창문 (button_panel 필요)
 window_initial = "unknown"       # 실제 창문을 보고 open / closed. unknown 이면 누르지 않음
+window_touch = false             # GPIO24 터치센서로 창문 상태 확인 (window_button 필요)
+touch_verified = false           # 실제 창문 닫힘 동안 HIGH가 유지되는 것을 확인한 뒤 true
 purifier = false
 purifier_initial = "unknown"     # 실제 전원을 보고 on / off. unknown 이면 버튼을 누르지 않음
 dehumidifier = false
