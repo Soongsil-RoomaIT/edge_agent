@@ -62,7 +62,7 @@ src/edge_agent/
 
 - **ack 는 기기가 실제로 목표 상태에 도달했을 때** 보낸다. 서보·모터는 비동기라 `set()` 직후에는 아직 움직이는 중이다.
   - 창문: 리밋 스위치 `position` 이 `open`/`closed` 가 되고 `is_moving` 이 끝나면
-  - 문: 터치센서가 닫힘을 감지하면
+  - 문: 문 센서가 닫힘을 감지하면
   - 공기청정기·제습기: 버튼 서보 동작이 끝나고 상태가 목표와 같으면
 - `expiresAt` 까지 도달을 확인하지 못하면 `FAILED`. 고장(`fault`)이 나면 바로 `FAILED`.
 - **같은 `commandId` 는 한 번만 실행**한다. SQLite 에 기록해서 재시작 후에도 유지된다.
@@ -252,6 +252,14 @@ python -m edge_agent
   dehumidifier_initial = "off"
   ```
   창문·공기청정기·제습기 명령이 겹치면 서보가 하나라서 하나씩 차례로 누른다 (한 번에 약 1초).
+- 자석식 문 센서(MC-38)의 접점 두 선은 GPIO23(물리 16번)과 GND에 연결한다. 문을 닫았을 때 자석이 가까워져 LOW, 열었을 때 HIGH가 되는지 확인한다. [배선 가이드](https://github.com/Soongsil-RoomaIT/hardware/blob/main/docs/SAD_V1_4_DEMO.md)
+  상태만 보내려면 기존 `[hardware]`에 다음을 설정한다. 에이전트는 약 0.5초마다 문 상태를 확인하고 연결 시와 상태가 바뀔 때 MQTT `devices`로 보낸다.
+  ```toml
+  door_sensor = true
+  door_magnetic = true
+  door_verified = true
+  door_closer = false
+  ```
 - CO2(SCD41)·미세먼지(PMS7003) 센서 없이 DHT 온습도만 달았으면 `temperature_model = "DHT11"`, `dht_only = true`.
   `dht_only = false` 면 두 센서가 없을 때 시작하지 못한다. 없는 값은 `null` 로 보낸다.
 - 액추에이터는 기본으로 모두 꺼져 있다. 켜지 않은 기기는 원격 명령에 `FAILED` (`... is not connected`) 로 답한다.

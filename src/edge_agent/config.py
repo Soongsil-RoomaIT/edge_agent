@@ -110,8 +110,9 @@ class HardwareConfig:
     dehumidifier: bool = False
     dehumidifier_initial: str = "unknown"
     door_sensor: bool = False
-    door_verified: bool = False  # 터치센서 설치 확인 완료
+    door_verified: bool = False  # 문 센서 설치 및 동작 확인 완료
     door_closer: bool = False  # door_sensor + door_verified 필요
+    door_magnetic: bool = False  # GPIO23 에 연결한 자석식 접점 센서
 
     def bundle_kwargs(self) -> dict:
         def initial(name: str, value: str) -> bool | None:
@@ -128,6 +129,8 @@ class HardwareConfig:
             raise ValueError("hardware.button_panel 과 window_motor 는 같이 쓸 수 없음 (GPIO17/27/22 겹침)")
         if self.window_button and not self.button_panel:
             raise ValueError("hardware.window_button = true 는 button_panel = true 가 필요함")
+        if self.door_magnetic and not self.door_sensor:
+            raise ValueError("hardware.door_magnetic = true requires door_sensor = true")
         window_states = {"open": True, "closed": False, "unknown": None}
         if self.window_initial not in window_states:
             raise ValueError(
@@ -145,6 +148,9 @@ class HardwareConfig:
             "door_verified": self.door_verified,
             "door_closer": self.door_closer,
         }
+        if self.door_magnetic:
+            # 기본 설정에서는 예전 HardwareBundle에 모르는 인자를 넘기지 않는다.
+            kwargs["door_magnetic"] = True
         if self.button_panel:
             # 버튼 서보 구성을 모르는 예전 hardware 레포에서도 기존 설정은 그대로 돌게, 켰을 때만 넘긴다
             kwargs.update(
