@@ -352,10 +352,9 @@ class EdgeAgent:
                 return None, "fault: position"
             return {"open": True, "closed": False}.get(position), None
 
-        state = getattr(act, "state", None)
-        if state == "unknown":
-            return None, "state unknown"
         try:
+            if getattr(act, "state", None) == "unknown":
+                return None, "state unknown"
             return act.is_on, None
         except Exception as e:  # hardware 는 상태를 모르면 HardwareFault 를 낸다
             return None, f"state error: {e}"
@@ -399,11 +398,11 @@ class EdgeAgent:
                 moving = bool(getattr(act, "is_moving", False))
                 if issue is not None and issue.startswith("fault"):
                     self._finish(action, False, issue)
+                elif now > action.deadline:
+                    self._finish(action, False, "target state not confirmed before deadline")
                 elif current == action.on and not moving:
                     state = protocol.device_state(action.actuator, action.on)
                     self._finish(action, True, f"{action.actuator} reached {state}")
-                elif now > action.deadline:
-                    self._finish(action, False, "target state not confirmed before deadline")
 
     def _finish(self, action: PendingAction, ok: bool, reason: str) -> None:
         with self._actuator_lock:
@@ -422,12 +421,18 @@ class EdgeAgent:
                 commandId=action.command_id,
             )
         if action.command_id is not None:
-            self._send_ack(protocol.ack(action.command_id, ok, reason, now))
+            ack = protocol.ack(action.command_id, ok, reason, now)
+            if ok and action.actuator == WINDOW and self._window_has_sensor():
+                ack["stateSource"] = "SENSOR"
+            self._send_ack(ack)
         elif ok:
             # 자동제어로 실제 완료한 동작 -> 복구 시 recovery 리포트로
             self.store.add_local_action(now, action.actuator, action.on, action.reason)
 
     # --- device state ---------------------------------------------------
+
+    def _window_has_sensor(self) -> bool:
+        return getattr(self.actuators.get(WINDOW), "state_source", None) == "SENSOR"
 
     def _device_states(self) -> dict[str, str]:
         """기기 id -> OPEN/CLOSED/ON/OFF. 상태를 모르는 기기는 빠진다."""
@@ -452,6 +457,8 @@ class EdgeAgent:
             if self._last_states.get(device_id) == state:
                 continue
             payload = {"id": device_id, "state": state, "updatedAt": protocol.iso()}
+            if device_id == protocol.DEVICE_IDS[WINDOW] and self._window_has_sensor():
+                payload["stateSource"] = "SENSOR"
             if self.mqtt.publish_json(self.mqtt.topic_devices, payload):
                 self._last_states[device_id] = state
 
@@ -645,6 +652,11 @@ def _build_hardware_agent(cfg: AgentConfig) -> EdgeAgent:
 
     hw = HardwareBundle(**kwargs)
     try:
+        if (
+            cfg.hardware.window_touch
+            and getattr(hw.actuators.get(WINDOW), "state_source", None) != "SENSOR"
+        ):
+            raise RuntimeError("window_touch requires the latest hardware package with window feedback")
         store = LocalStore(cfg.db_path)
         try:
             agent = EdgeAgent(cfg, hw.sensor, dict(hw.actuators), store, door_sensor=hw.door_sensor)
