@@ -99,6 +99,7 @@ def test_old_database_with_not_null_columns_is_migrated(tmp_path):
     old, new = store.unsynced_readings()
     assert (old["temperature"], old["co2"], old["pm10"]) == (20.0, 600.0, None)  # 기존 행 보존
     assert (new["temperature"], new["co2"], new["pm25"]) == (24.3, None, None)
+    assert old["gas_detected"] is None and new["gas_detected"] is None
     store.close()
     LocalStore(db).close()  # 이미 바뀐 DB 를 다시 열어도 문제없음
 

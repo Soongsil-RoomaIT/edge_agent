@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS readings (
     co2         REAL,
     pm25        REAL,
     synced      INTEGER NOT NULL DEFAULT 0,
-    pm10        REAL
+    pm10        REAL,
+    gas_detected INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_readings_synced ON readings (synced, id);
 
@@ -77,6 +78,9 @@ class LocalStore:
         if "pm10" not in info:
             with self._conn:
                 self._conn.execute("ALTER TABLE readings ADD COLUMN pm10 REAL")
+        if "gas_detected" not in info:
+            with self._conn:
+                self._conn.execute("ALTER TABLE readings ADD COLUMN gas_detected INTEGER")
         if info["temperature"]["notnull"]:
             # 예전 DB 는 측정값이 NOT NULL 이었다. 센서가 일부만 달린 구성(DHT11 만 등)을 저장하려면
             # 제약을 풀어야 하는데 SQLite 는 ALTER 로 못 바꾸므로 테이블을 다시 만든다.
@@ -91,10 +95,13 @@ class LocalStore:
                     co2         REAL,
                     pm25        REAL,
                     synced      INTEGER NOT NULL DEFAULT 0,
-                    pm10        REAL
+                    pm10        REAL,
+                    gas_detected INTEGER
                 );
-                INSERT INTO readings_new (id, measured_at, temperature, humidity, co2, pm25, synced, pm10)
-                    SELECT id, measured_at, temperature, humidity, co2, pm25, synced, pm10 FROM readings;
+                INSERT INTO readings_new
+                    (id, measured_at, temperature, humidity, co2, pm25, synced, pm10, gas_detected)
+                    SELECT id, measured_at, temperature, humidity, co2, pm25, synced, pm10, gas_detected
+                    FROM readings;
                 DROP TABLE readings;
                 ALTER TABLE readings_new RENAME TO readings;
                 CREATE INDEX IF NOT EXISTS idx_readings_synced ON readings (synced, id);
@@ -107,13 +114,16 @@ class LocalStore:
 
     # --- readings -------------------------------------------------------
 
-    def save_reading(self, r: Reading) -> int:
+    def save_reading(self, r: Reading, *, gas_detected: bool | None = None) -> int:
         with self._conn:
             cur = self._conn.execute(
-                "INSERT INTO readings (measured_at, temperature, humidity, co2, pm25, pm10)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO readings (measured_at, temperature, humidity, co2, pm25, pm10, gas_detected)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 # pm10 이 없는 Reading(hardware 구버전)도 저장할 수 있게 getattr 사용
-                (r.measured_at, r.temperature, r.humidity, r.co2, r.pm25, getattr(r, "pm10", None)),
+                (
+                    r.measured_at, r.temperature, r.humidity, r.co2, r.pm25,
+                    getattr(r, "pm10", None), gas_detected,
+                ),
             )
         return cur.lastrowid
 

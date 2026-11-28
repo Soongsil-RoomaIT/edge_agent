@@ -29,6 +29,10 @@ class SensorReader(Protocol):
     def read(self) -> Reading: ...
 
 
+class GasSensor(Protocol):
+    def read(self) -> bool | None: ...
+
+
 class DoorSensor(Protocol):
     @property
     def is_open(self) -> bool: ...

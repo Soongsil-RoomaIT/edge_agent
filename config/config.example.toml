@@ -39,6 +39,9 @@ temperature_high = 30.0
 [hardware]
 temperature_model = "SHT31"      # SHT31 | DHT11 | DHT22
 dht_only = false                 # true = DHT 온습도만 (CO2·미세먼지 센서 없음). temperature_model 을 DHT11/DHT22 로
+gas_sensor = false               # MQ-2 D0를 분압해 GPIO25에 연결한 경우 true
+gas_active_low = true            # LOW가 감지 상태인 모듈
+gas_warmup_seconds = 180.0
 window_motor = false
 button_panel = false             # true = 버튼 서보 하나 + LED 로 창문/공기청정기/제습기 (window_motor 와 같이 못 씀)
 window_button = false            # 버튼으로 여닫는 창문 (button_panel 필요)
