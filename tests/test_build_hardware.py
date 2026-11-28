@@ -26,6 +26,13 @@ class SensorWindow(MockActuator):
         super().set(is_open)
 
 
+class FakeGasSensor:
+    value: bool | None = None
+
+    def read(self) -> bool | None:
+        return self.value
+
+
 class FakeBundle:
     instances: list["FakeBundle"] = []
     fail_with: Exception | None = None
@@ -44,6 +51,7 @@ class FakeBundle:
         if kwargs["purifier"]:
             self.actuators[AIR_PURIFIER] = MockActuator(AIR_PURIFIER)
         self.door_sensor = MockDoorSensor() if kwargs["door_sensor"] else None
+        self.gas_sensor = FakeGasSensor() if kwargs.get("gas_sensor") else None
         FakeBundle.instances.append(self)
 
     def close(self) -> None:
@@ -84,6 +92,55 @@ def test_bundle_gets_config_values(fake_hw, tmp_path):
     assert agent.door_sensor is None
     assert "door_magnetic" not in hw.kwargs
     assert "window_touch" not in hw.kwargs
+    assert "gas_sensor" not in hw.kwargs
+
+
+def test_gas_samples_are_uploaded_after_reconnection(fake_hw, tmp_path):
+    cfg = hw_config(
+        tmp_path, temperature_model="DHT11", dht_only=True,
+        gas_sensor=True, gas_active_low=False, gas_warmup_seconds=12.0,
+    )
+    agent = build_agent(cfg)
+    (hw,) = fake_hw.instances
+    assert hw.kwargs["gas_sensor"] is True
+    assert hw.kwargs["gas_active_low"] is False
+    assert hw.kwargs["gas_warmup_seconds"] == 12.0
+
+    agent.mqtt = FakeMqtt()
+    try:
+        for value in (None, True, False):
+            hw.gas_sensor.value = value
+            agent._sample()
+        assert agent.mqtt.on(agent.mqtt.topic_sensors) == []
+
+        go_online(agent)
+        agent._flush_backlog()
+        payloads = agent.mqtt.on(agent.mqtt.topic_sensors)
+        assert [payload["gasDetected"] for payload in payloads] == [None, True, False]
+        assert not agent.store.unsynced_readings()
+    finally:
+        agent.store.close()
+
+
+def test_gas_is_uploaded_when_temperature_sensor_fails(fake_hw, tmp_path):
+    class BrokenSensor:
+        def read(self):
+            raise OSError("DHT checksum failed")
+
+    agent = build_agent(hw_config(tmp_path, gas_sensor=True))
+    (hw,) = fake_hw.instances
+    agent.sensor = BrokenSensor()
+    hw.gas_sensor.value = True
+    agent.mqtt = FakeMqtt()
+    go_online(agent)
+    try:
+        agent._sample()
+
+        (payload,) = agent.mqtt.on(agent.mqtt.topic_sensors)
+        assert payload["gasDetected"] is True
+        assert payload["temperature"] is None and payload["humidity"] is None
+    finally:
+        agent.store.close()
 
 
 def test_window_touch_reports_and_acks_observed_state(fake_hw, tmp_path):

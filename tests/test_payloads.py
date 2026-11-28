@@ -12,7 +12,9 @@ def test_sensors_payload_matches_contract():
     agent._flush_backlog()
 
     (payload,) = agent.mqtt.on(agent.mqtt.topic_sensors)
-    assert set(payload) == {"measuredAt", "temperature", "humidity", "co2", "pm25", "pm10"}
+    assert set(payload) == {
+        "measuredAt", "temperature", "humidity", "co2", "pm25", "pm10", "gasDetected"
+    }
     assert payload["measuredAt"].endswith("Z")
     protocol.parse_iso(payload["measuredAt"])
     assert payload["pm10"] >= payload["pm25"]

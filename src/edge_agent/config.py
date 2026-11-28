@@ -115,6 +115,9 @@ class HardwareConfig:
     door_magnetic: bool = False  # GPIO23 에 연결한 자석식 접점 센서
     window_touch: bool = False  # 공용 버튼 창문의 실제 상태를 GPIO24에서 확인
     touch_verified: bool = False  # 창문 닫힘 중 HIGH가 유지되는지 확인 완료
+    gas_sensor: bool = False
+    gas_active_low: bool = True
+    gas_warmup_seconds: float = 180.0
 
     def bundle_kwargs(self) -> dict:
         def initial(name: str, value: str) -> bool | None:
@@ -159,6 +162,12 @@ class HardwareConfig:
             kwargs["door_magnetic"] = True
         if self.window_touch:
             kwargs.update(window_touch=True, touch_verified=True)
+        if self.gas_sensor:
+            kwargs.update(
+                gas_sensor=True,
+                gas_active_low=self.gas_active_low,
+                gas_warmup_seconds=self.gas_warmup_seconds,
+            )
         if self.button_panel:
             # 버튼 서보 구성을 모르는 예전 hardware 레포에서도 기존 설정은 그대로 돌게, 켰을 때만 넘긴다
             kwargs.update(

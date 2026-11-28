@@ -33,10 +33,12 @@ from .devices import (
     WINDOW,
     Actuator,
     DoorSensor,
+    GasSensor,
     MockActuator,
     MockDoorCloser,
     MockDoorSensor,
     MockSensorReader,
+    Reading,
     SensorReader,
 )
 from .storage import LocalStore
@@ -69,12 +71,14 @@ class EdgeAgent:
         actuators: dict[str, Actuator],
         store: LocalStore,
         door_sensor: DoorSensor | None = None,
+        gas_sensor: GasSensor | None = None,
     ) -> None:
         self.cfg = cfg
         self.sensor = sensor
         self.actuators = actuators
         self.store = store
         self.door_sensor = door_sensor
+        self.gas_sensor = gas_sensor
         self._door_open: bool | None = None  # None = 아직 한 번도 안 읽음
         self.monitor = ConnectivityMonitor(cfg.offline_grace, clock=time.monotonic)
         self._actuator_lock = threading.RLock()
@@ -279,6 +283,7 @@ class EdgeAgent:
             self._flush_backlog()  # 측정 주기를 기다리지 않고 바로 전송
 
     def _sample(self) -> None:
+        reading = None
         try:
             reading = self.sensor.read()
         except Exception as e:
@@ -289,17 +294,26 @@ class EdgeAgent:
                 self.store.log_event("sensor_error", error=str(e))
             else:
                 log.debug("sensor read failed (%d in a row): %s", self._sensor_failures, e)
-            return
+        else:
+            if self._sensor_failures:
+                log.info("sensor recovered after %d failed reads", self._sensor_failures)
+                self.store.log_event("sensor_recovered", failed_reads=self._sensor_failures)
+                self._sensor_failures = 0
 
-        if self._sensor_failures:
-            log.info("sensor recovered after %d failed reads", self._sensor_failures)
-            self.store.log_event("sensor_recovered", failed_reads=self._sensor_failures)
-            self._sensor_failures = 0
+        gas_detected = self.gas_sensor.read() if self.gas_sensor is not None else None
+        sensor_available = reading is not None
+        if reading is None:
+            if gas_detected is None:
+                return
+            reading = Reading(
+                measured_at=time.time(), temperature=None, humidity=None, co2=None, pm25=None
+            )
 
-        self.store.save_reading(reading)
+        self.store.save_reading(reading, gas_detected=gas_detected)
 
         if self.monitor.mode is Mode.OFFLINE:
-            self._apply_auto_control(reading)
+            if sensor_available:
+                self._apply_auto_control(reading)
         else:
             self._flush_backlog()
 
@@ -469,6 +483,7 @@ class EdgeAgent:
         sent: list[int] = []
         for row in self.store.unsynced_readings():
             # 없는 센서 값은 0 으로 만들지 않고 null 로 보낸다 (cloud-server bbd284e 부터 허용)
+            gas_detected = row["gas_detected"]
             payload = {
                 "measuredAt": protocol.iso(row["measured_at"]),
                 "temperature": row["temperature"],
@@ -476,6 +491,7 @@ class EdgeAgent:
                 "co2": row["co2"],
                 "pm25": row["pm25"],
                 "pm10": row["pm10"],
+                "gasDetected": None if gas_detected is None else bool(gas_detected),
             }
             if not self.mqtt.publish_json(self.mqtt.topic_sensors, payload):
                 break
@@ -659,7 +675,14 @@ def _build_hardware_agent(cfg: AgentConfig) -> EdgeAgent:
             raise RuntimeError("window_touch requires the latest hardware package with window feedback")
         store = LocalStore(cfg.db_path)
         try:
-            agent = EdgeAgent(cfg, hw.sensor, dict(hw.actuators), store, door_sensor=hw.door_sensor)
+            agent = EdgeAgent(
+                cfg,
+                hw.sensor,
+                dict(hw.actuators),
+                store,
+                door_sensor=hw.door_sensor,
+                gas_sensor=hw.gas_sensor if cfg.hardware.gas_sensor else None,
+            )
         except BaseException:
             store.close()
             raise

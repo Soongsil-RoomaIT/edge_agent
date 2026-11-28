@@ -26,7 +26,8 @@ def test_sensors_schema():
     agent._flush_backlog()
 
     (p,) = agent.mqtt.on(agent.mqtt.topic_sensors)
-    assert set(p) == {"measuredAt", "temperature", "humidity", "co2", "pm25", "pm10"}
+    assert set(p) == {"measuredAt", "temperature", "humidity", "co2", "pm25", "pm10", "gasDetected"}
+    assert p["gasDetected"] is None
     assert ISO.match(p["measuredAt"])
     assert -80 <= p["temperature"] <= 100 and 0 <= p["humidity"] <= 100
 
